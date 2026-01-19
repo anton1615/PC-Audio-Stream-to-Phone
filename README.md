@@ -24,15 +24,16 @@ There are several audio streaming solutions available on the market (e.g., Audio
 ## Key Features
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Ultra-Low Latency**: Utilizes **Oboe (C++)** on Android for AAudio support and **WASAPI** on Windows.
-*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo.
-*   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden in the tray.
-*   **Stability First**: Built-in jitter buffer management and silence injection.
+*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo for studio-quality streaming.
+*   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden.
+*   **Background Ready**: Designed to stay alive in the **System Tray**. Close the window, and the music keeps playing.
+*   **Stability First**: Built-in jitter buffer management and silence injection to prevent popping.
 *   **Auto-Discovery**: Support for mDNS (Bonjour) for easy connection.
 
 ## Supported Platforms
 
 ### Windows (Server)
-*   **Tested**: Windows 10 (x64), AMD Ryzen 5 2400G (Integrated Graphics).
+*   **Tested**: Windows 10/11 (x64).
 *   **Optimized**: Specifically designed to work flawlessly on systems where hardware-accelerated GUI frameworks (like OpenGL/Vulkan) might cause driver overhead when running in the background.
 
 ### Android (Client)
@@ -44,6 +45,7 @@ There are several audio streaming solutions available on the market (e.g., Audio
 ## Technical Stack
 *   **Backend (Rust)**: `cpal` for audio capture, `audiopus` for encoding, **Slint** for the GUI (Software Renderer backend).
 *   **Mobile (Kotlin/C++)**: `Oboe` for low-latency playback, `Opus` for decoding.
+*   **Native Integration**: Direct Win32 API calls for reliable window lifecycle and system tray management.
 *   **Protocol**: Custom UDP-based protocol with sequence tracking for packet loss mitigation.
 
 ---
@@ -58,7 +60,7 @@ To ensure the best audio quality and avoid sample rate conversion issues:
 *   In the **Advanced** tab, set the **Default Format** to **24-bit (or 16-bit), 48000 Hz (Studio Quality)**.
 
 ### 2. Firewall Configuration
-The server communicates over **UDP Port 12345**. 
+The server communicates over **UDP Port 12345**.
 *   When you first run `server.exe`, Windows Firewall may ask for permission. Ensure you check both **Private** and **Public** networks.
 *   If you cannot connect, manually add an Inbound Rule in Windows Firewall to allow **UDP port 12345**.
 
@@ -74,12 +76,13 @@ Download the latest versions from the [Releases](https://github.com/anton1615/PC
 ### 2. Setup
 1.  **Launch Server**: Run `server.exe` on your PC. Allow it through the Windows Firewall if prompted. Click **Start Server**.
 2.  **Connect Client**: Open the app on your Android phone. It should automatically detect your PC via the mDNS broadcast.
-3.  **Adjust Latency**: If you experience audio stutters, increase the "Buffer Size" in the app settings to find the sweet spot for your network.
+3.  **Go Background**: You can safely close the server window. It will minimize to the **System Tray** (near the clock) and continue streaming in the background. To quit, right-click the tray icon and select **Quit**.
+4.  **Adjust Latency**: If you experience audio stutters, increase the "Buffer Size" in the app settings to find the sweet spot for your network stability.
 
 ## Troubleshooting
 *   **No Devices Found**: Ensure both devices are on the same Wi-Fi network. Check if your PC's firewall is blocking **UDP Port 12345**.
 *   **Audio Stuttering**: This is usually caused by network jitter. Try switching to a 5GHz Wi-Fi band or increasing the buffer size in the app.
 *   **No Audio Captured**: Ensure your PC is playing sound through the default output device *before* starting the server.
-
+*   **White Screen on Restore**: If the server window appears white for a split second when restoring from the tray, this is a known behavior of the ultra-efficient software renderer. It will refresh instantly as soon as the UI updates or you hover over it.
 ## License
 Licensed under the [MIT License](LICENSE).
