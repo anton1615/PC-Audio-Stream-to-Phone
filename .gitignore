@@ -1,0 +1,26 @@
+# Rust
+/server/target
+/server/Cargo.lock
+
+# Android
+.gradle
+build/
+local.properties
+*.apk
+*.aar
+*.jks
+.idea/
+*.iml
+android/app/.cxx
+android/app/build
+android/.gradle
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Gemini CLI
+
+conductor/
+
+.gemini-clipboard/
