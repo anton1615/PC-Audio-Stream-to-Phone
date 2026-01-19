@@ -24,25 +24,25 @@ There are several audio streaming solutions available on the market (e.g., Audio
 ## Key Features
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Ultra-Low Latency**: Utilizes **Oboe (C++)** on Android for AAudio support and **WASAPI** on Windows.
-*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo, providing crystal clear audio even at lower bitrates.
-*   **Stability First**: Built-in jitter buffer management and silence injection (prevents audio popping when the PC is quiet).
-*   **Auto-Discovery**: Support for mDNS (Bonjour) means you don't have to type IP addresses manually.
+*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo.
+*   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden in the tray.
+*   **Stability First**: Built-in jitter buffer management and silence injection.
+*   **Auto-Discovery**: Support for mDNS (Bonjour) for easy connection.
 
 ## Supported Platforms
 
 ### Windows (Server)
-*   **Tested**: Windows 10 (x64)
-*   **Recommended**: Windows 10 or Windows 11.
-*   *Note: Should theoretically work on Windows 7/8 via WASAPI, but not officially tested.*
+*   **Tested**: Windows 10 (x64), AMD Ryzen 5 2400G (Integrated Graphics).
+*   **Optimized**: Specifically designed to work flawlessly on systems where hardware-accelerated GUI frameworks (like OpenGL/Vulkan) might cause driver overhead when running in the background.
 
 ### Android (Client)
-*   **Minimum**: Android 8.0 (Oreo / API 26) - Required for stable Oboe/AAudio performance.
+*   **Minimum**: Android 8.0 (Oreo / API 26).
 *   **Recommended**: Android 10 or higher.
 
 ---
 
 ## Technical Stack
-*   **Backend (Rust)**: `cpal` for audio capture, `audiopus` for encoding, `eframe` for the GUI.
+*   **Backend (Rust)**: `cpal` for audio capture, `audiopus` for encoding, **Slint** for the GUI (Software Renderer backend).
 *   **Mobile (Kotlin/C++)**: `Oboe` for low-latency playback, `Opus` for decoding.
 *   **Protocol**: Custom UDP-based protocol with sequence tracking for packet loss mitigation.
 

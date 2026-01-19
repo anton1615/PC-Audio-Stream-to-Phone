@@ -1,0 +1,67 @@
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component AppWindow extends Window {
+    in property <string> status_text: "Idle";
+    in property <bool> is_streaming: false;
+    in property <string> bitrate_text: "128000 bps";
+    in property <string> packets_text: "0 packets";
+    in property <string> client_text: "None";
+
+    callback toggle_server();
+
+    title: "AS2P Server";
+    width: 400px;
+    height: 300px;
+    background: #1e1e1e;
+    icon: @image-url("", ""); // 可以在此處放置圖示路徑
+
+    VerticalLayout {
+        padding: 25px;
+        spacing: 12px;
+        
+        Text {
+            text: "AS2P Server";
+            font-size: 24px;
+            color: white;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+            Text { text: "Status:"; color: #aaaaaa; font-size: 16px; }
+            Text {
+                text: root.status_text;
+                color: root.is_streaming ? #00ff00 : #ff5555;
+                font-size: 16px;
+                font-weight: 700;
+            }
+        }
+
+        Button {
+            text: root.is_streaming ? "Stop Server" : "Start Server";
+            height: 40px;
+            clicked => { root.toggle_server(); }
+        }
+
+        Rectangle { 
+            height: 1px; 
+            background: #333333; 
+        }
+
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "Bitrate: " + root.bitrate_text; color: #888888; font-size: 14px; }
+            Text { text: "Sent: " + root.packets_text; color: #888888; font-size: 14px; }
+            Text { text: "Client: " + root.client_text; color: #888888; font-size: 14px; }
+        }
+        
+        Text {
+            text: "Tip: Close window (X) to hide to tray.";
+            font-size: 12px;
+            color: #555555;
+            horizontal-alignment: center;
+            vertical-alignment: bottom;
+        }
+    }
+}

@@ -1,133 +1,122 @@
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use eframe::egui;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tokio::sync::mpsc as tokio_mpsc;
+use crossbeam_channel::Receiver as CrossbeamReceiver;
+use slint::ComponentHandle;
+use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL, FindWindowW, ShowWindow, SW_HIDE};
+use windows::core::w;
 
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
+slint::slint! {
+    import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
-pub enum UiMessage {
-    UpdateStats {
-        packets: u64,
-        bitrate: i32,
-        client_ip: Option<String>,
-    },
-}
+    export component AppWindow inherits Window {
+        in property <string> status_text: "Idle";
+        in property <bool> is_streaming: false;
+        in property <string> bitrate_text: "128000 bps";
+        in property <string> packets_text: "0 packets";
+        in property <string> client_text: "None";
+        in property <int> refresh_counter: 0;
 
-#[derive(Clone, Copy)]
-pub enum UiCommand {
-    ToggleServer,
-    ClientDisconnect, // 新增：手機遠端斷開
-    Quit,
-}
+        callback toggle_server();
 
-pub struct AudioServerApp {
-    pub is_running: Arc<AtomicBool>,
-    pub is_visible: Arc<AtomicBool>,
-    pub bitrate: i32,
-    pub packets_sent: u64,
-    pub client_ip: Option<String>,
-    pub receiver: std::sync::mpsc::Receiver<UiMessage>,
-    pub cmd_sender: tokio_mpsc::Sender<UiCommand>,
-    pub hwnd_store: Arc<Mutex<Option<isize>>>,
-}
+        title: "AS2P_SERVER_UI"; 
+        width: 400px;
+        height: 300px;
+        background: #1e1e1e;
 
-impl AudioServerApp {
-    pub fn new(
-        _cc: &eframe::CreationContext<'_>, 
-        receiver: std::sync::mpsc::Receiver<UiMessage>,
-        cmd_sender: tokio_mpsc::Sender<UiCommand>,
-        is_running: Arc<AtomicBool>,
-        is_visible: Arc<AtomicBool>,
-        hwnd_store: Arc<Mutex<Option<isize>>>,
-    ) -> Self {
-        Self {
-            is_running,
-            is_visible,
-            bitrate: 128000,
-            packets_sent: 0,
-            client_ip: None,
-            receiver,
-            cmd_sender,
-            hwnd_store,
+        // [CRITICAL FIX] 背景顏色強制連動 refresh_counter
+        // 這會迫使渲染器在 counter 改變時，重新粉刷整個視窗背景
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: root.refresh_counter >= 0 ? #1e1e1e : #1e1e1e;
+            
+            VerticalLayout {
+                padding: 25px;
+                spacing: 12px;
+                Text { text: "AS2P Server"; font-size: 24px; color: white; horizontal-alignment: center; }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    Text { text: "Status:"; color: #aaaaaa; font-size: 16px; }
+                    Text { text: root.status_text; color: root.is_streaming ? #00ff00 : #ff5555; font-size: 16px; font-weight: 700; }
+                }
+                Button { text: root.is_streaming ? "Stop Server" : "Start Server"; height: 40px; clicked => { root.toggle_server(); } }
+                Rectangle { height: 1px; background: #333333; }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Bitrate: " + root.bitrate_text; color: #888888; font-size: 14px; }
+                    Text { text: "Sent: " + root.packets_text; color: #888888; font-size: 14px; }
+                    Text { text: "Client: " + root.client_text; color: #888888; font-size: 14px; }
+                }
+                Text { text: "Tip: Close window (X) to hide to tray."; font-size: 12px; color: #555555; horizontal-alignment: center; vertical-alignment: bottom; }
+            }
         }
     }
 }
 
-impl eframe::App for AudioServerApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // 獲取 HWND
-        let hwnd_val = {
-            let mut store = self.hwnd_store.lock().unwrap();
-            if store.is_none() {
-                if let Ok(handle) = frame.window_handle() {
-                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                        *store = Some(h.hwnd.get() as isize);
+pub enum UiMessage {
+    UpdateStats { packets: u64, bitrate: i32, client_ip: Option<String> },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum UiCommand { ToggleServer }
+
+pub struct UiState {
+    pub is_running: Arc<AtomicBool>,
+    pub stats_rx: CrossbeamReceiver<UiMessage>,
+    pub cmd_tx: tokio_mpsc::Sender<UiCommand>,
+    pub is_ui_visible: Arc<AtomicBool>,
+    pub main_thread_id: u32,
+}
+
+pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<AppWindow>>) {
+    unsafe { std::env::set_var("SLINT_BACKEND", "software"); }
+    let window = AppWindow::new().expect("Failed to create Slint window");
+    
+    let _ = handle_tx.send(window.as_weak());
+
+    let is_visible_on_close = state.is_ui_visible.clone();
+    let main_tid = state.main_thread_id;
+    window.window().on_close_requested(move || {
+        if let Ok(hwnd) = unsafe { FindWindowW(None, w!("AS2P_SERVER_UI")) } {
+            if !hwnd.0.is_null() {
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
+            }
+        }
+        is_visible_on_close.store(false, Ordering::SeqCst);
+        unsafe { let _ = PostThreadMessageW(main_tid, WM_NULL, None, None); }
+        slint::CloseRequestResponse::KeepWindowShown
+    });
+
+    let cmd_tx_ui = state.cmd_tx.clone();
+    window.on_toggle_server(move || { let _ = cmd_tx_ui.try_send(UiCommand::ToggleServer); });
+
+    let window_weak = window.as_weak();
+    let is_running_timer = state.is_running.clone();
+    let stats_rx_timer = state.stats_rx.clone();
+    let timer = slint::Timer::default();
+    
+    // 初次啟動強制觸發一次 counter
+    window.set_refresh_counter(1);
+
+    timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
+        if let Some(ui) = window_weak.upgrade() {
+            // [IMPORTANT] 不再檢查 is_visible，持續驅動更新
+            let running = is_running_timer.load(Ordering::SeqCst);
+            ui.set_is_streaming(running);
+            ui.set_status_text(if running { "Streaming".into() } else { "Idle".into() });
+            while let Ok(msg) = stats_rx_timer.try_recv() {
+                match msg {
+                    UiMessage::UpdateStats { packets, bitrate, client_ip } => {
+                        ui.set_packets_text(format!("{} packets", packets).into());
+                        ui.set_bitrate_text(format!("{} bps", bitrate).into());
+                        ui.set_client_text(client_ip.unwrap_or_else(|| "None".to_string()).into());
                     }
                 }
             }
-            *store
-        };
-
-        // 處理視窗關閉事件
-        if ctx.input(|i| i.viewport().close_requested()) {
-            println!("[UI] Window close requested. Sending Quit command.");
-            let _ = self.cmd_sender.try_send(UiCommand::Quit);
         }
+    });
 
-        while let Ok(msg) = self.receiver.try_recv() {
-            match msg {
-                UiMessage::UpdateStats { packets, bitrate, client_ip } => {
-                    self.packets_sent = packets;
-                    self.bitrate = bitrate;
-                    self.client_ip = client_ip;
-                }
-            }
-        }
-
-        if !self.is_visible.load(Ordering::SeqCst) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-            return;
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("AS2P Server (PC Audio Steam to Phone)");
-            
-            let running = self.is_running.load(Ordering::SeqCst);
-            ui.horizontal(|ui| {
-                ui.label("Status:");
-                if running {
-                    ui.colored_label(egui::Color32::GREEN, "Running");
-                } else {
-                    ui.colored_label(egui::Color32::RED, "Stopped");
-                }
-            });
-
-            if ui.button(if running { "Stop Server" } else { "Start Server" }).clicked() {
-                let _ = self.cmd_sender.try_send(UiCommand::ToggleServer);
-            }
-
-            ui.separator();
-            ui.label(format!("Bitrate: {} bps", self.bitrate));
-            ui.label(format!("Packets: {}", self.packets_sent));
-            if let Some(ip) = &self.client_ip {
-                ui.label(format!("Client: {}", ip));
-            }
-
-            ui.add_space(20.0);
-            if ui.button("Minimize to Tray").clicked() {
-                self.is_visible.store(false, Ordering::SeqCst);
-                #[cfg(target_os = "windows")]
-                if let Some(h) = hwnd_val {
-                    unsafe { let _ = ShowWindow(HWND(h as _), SW_HIDE); }
-                }
-            }
-        });
-        
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    }
+    window.run().expect("Slint event loop error");
 }

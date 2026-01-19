@@ -24,9 +24,4 @@ impl UdpSender {
         self.socket.send_to(&packet, self.target).await.map_err(|e| e.to_string())?;
         Ok(())
     }
-
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), String> {
-        self.socket.send_to(data, self.target).await.map_err(|e| e.to_string())?;
-        Ok(())
-    }
 }

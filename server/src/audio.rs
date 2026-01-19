@@ -4,7 +4,6 @@ use std::sync::mpsc::{self, Receiver};
 pub struct AudioCapturer {
     _stream: cpal::Stream,
     receiver: Receiver<Vec<f32>>,
-    pub device_name: String,
 }
 
 impl AudioCapturer {
@@ -14,6 +13,7 @@ impl AudioCapturer {
             .default_output_device()
             .ok_or("No default output device found")?;
 
+        #[allow(deprecated)]
         let device_name = device.name().unwrap_or_else(|_| "Unknown Device".to_string());
         
         // 獲取所有支援 48kHz Stereo 的配置
@@ -97,7 +97,6 @@ impl AudioCapturer {
         Ok(Self {
             _stream: stream,
             receiver: rx,
-            device_name,
         })
     }
 
@@ -107,12 +106,5 @@ impl AudioCapturer {
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => Err("Audio channel disconnected".to_string()),
         }
-    }
-
-    pub fn get_current_default_device_name() -> String {
-        cpal::default_host()
-            .default_output_device()
-            .and_then(|d| d.name().ok())
-            .unwrap_or_else(|| "None".to_string())
     }
 }
