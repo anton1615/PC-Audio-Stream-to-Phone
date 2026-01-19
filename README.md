@@ -48,6 +48,22 @@ There are several audio streaming solutions available on the market (e.g., Audio
 
 ---
 
+## Initial Setup
+
+### 1. Windows Audio Settings
+To ensure the best audio quality and avoid sample rate conversion issues:
+*   Open **Sound Settings** on your Windows PC.
+*   Go to **Sound Control Panel** -> **Playback** tab.
+*   Right-click your default output device -> **Properties**.
+*   In the **Advanced** tab, set the **Default Format** to **24-bit (or 16-bit), 48000 Hz (Studio Quality)**.
+
+### 2. Firewall Configuration
+The server communicates over **UDP Port 12345**. 
+*   When you first run `server.exe`, Windows Firewall may ask for permission. Ensure you check both **Private** and **Public** networks.
+*   If you cannot connect, manually add an Inbound Rule in Windows Firewall to allow **UDP port 12345**.
+
+---
+
 ## How to Use
 
 ### 1. Download Binaries
