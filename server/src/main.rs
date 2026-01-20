@@ -89,11 +89,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut udp_sender = match UdpSender::new(&target_addr).await { Ok(s) => s, Err(_) => continue };
                 let mut capturer = match AudioCapturer::new() { Ok(c) => c, Err(_) => continue };
                 let mut encoder = match create_encoder() { Ok(e) => e, Err(_) => continue };
-                let _ = configure_encoder(&mut encoder, 128000, 5);
+                
+                let mut current_bitrate = 128000;
+                let mut current_complexity = 5;
+                let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
+                
                 let mut pcm_buffer = Vec::with_capacity(1920 * 10);
                 loop {
                     tokio::select! {
                         cmd = cmd_rx.recv() => { if let Some(_) = cmd { server_active = false; break; } }
+                        
+                        // --- Receive Control Packets (0x02: Config, 0x03: Disconnect) ---
+                        result = socket.recv_from(&mut buf) => {
+                            if let Ok((len, _addr)) = result {
+                                if len >= 6 && buf[0] == 0x02 {
+                                    let bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
+                                    let complexity = buf[5] as i32;
+                                    println!("Updating encoder: bitrate={}bps, complexity={}", bitrate, complexity);
+                                    if let Ok(_) = configure_encoder(&mut encoder, bitrate, complexity) {
+                                        current_bitrate = bitrate;
+                                        current_complexity = complexity;
+                                        // 立即發送一次 UI 更新，確保顯示同步
+                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                                            packets: sequence, 
+                                            bitrate: current_bitrate, 
+                                            client_ip: Some(target_addr.clone()) 
+                                        });
+                                    }
+                                } else if len >= 1 && buf[0] == 0x03 {
+                                    println!("Client requested disconnect. Resetting UI stats.");
+                                    // 不要關閉 server_active，只需跳出傳輸迴圈等待下一次連線
+                                    let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                                        packets: 0, 
+                                        bitrate: 128000, 
+                                        client_ip: None 
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+
                         _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
                             while let Ok(Some(mut pcm)) = capturer.read_samples() {
                                 pcm_buffer.append(&mut pcm);
@@ -103,10 +138,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !data.is_empty() { let _ = udp_sender.send_audio_with_seq(sequence, data).await; sequence += 1; }
                                 }
                             }
-                            if sequence > 0 && sequence % 500 == 0 { let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: sequence, bitrate: 128000, client_ip: Some(target_addr.clone()) }); }
+                            if sequence > 0 && sequence % 500 == 0 { 
+                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                                    packets: sequence, 
+                                    bitrate: current_bitrate, 
+                                    client_ip: Some(target_addr.clone()) 
+                                }); 
+                            }
                         }
                     }
                 }
+                // 當跳出傳輸迴圈時（不論是 client 斷開還是手動停止），重置 UI 顯示
+                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                    packets: 0, 
+                    bitrate: 128000, 
+                    client_ip: None 
+                });
             }
         });
     });

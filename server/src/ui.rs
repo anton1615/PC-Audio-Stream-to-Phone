@@ -20,6 +20,7 @@ slint::slint! {
         callback toggle_server();
 
         title: "AS2P_SERVER_UI"; 
+        icon: @image-url("../../as2p.png");
         width: 400px;
         height: 300px;
         background: #1e1e1e;

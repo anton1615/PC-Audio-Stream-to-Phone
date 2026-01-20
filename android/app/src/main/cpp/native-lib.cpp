@@ -48,6 +48,8 @@ public:
                ->setFormat(oboe::AudioFormat::Float)
                ->setChannelCount(CHANNELS)
                ->setSampleRate(SAMPLE_RATE)
+               ->setUsage(oboe::Usage::Media)
+               ->setContentType(oboe::ContentType::Music)
                ->setDataCallback(this);
 
         oboe::Result result = builder.openStream(mStream);
@@ -115,17 +117,15 @@ public:
 
     void setBufferSize(int size) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
-        bool shrinking = size < mTargetBufferSize;
         mTargetBufferSize = size;
         
-        if (shrinking) {
-            while (mJitterBuffer.size() > (size_t)mTargetBufferSize) {
-                mJitterBuffer.erase(mJitterBuffer.begin());
-            }
-            mIsBuffering = true; 
-            LOGI("Buffer shrunk, force resyncing...");
-        }
-        LOGI("Buffer size set to %d", mTargetBufferSize);
+        // 不論變大變小，只要變動就強制重啟緩衝
+        // 清空舊緩衝區，防止不同 Bitrate 混合導致的雜音或解碼異常
+        mJitterBuffer.clear();
+        mDecodedPcmBuffer.clear();
+        mIsBuffering = true; 
+        
+        LOGI("Buffer size updated to %d, re-buffering forced...", mTargetBufferSize);
     }
 
     int getBufferDepth() {

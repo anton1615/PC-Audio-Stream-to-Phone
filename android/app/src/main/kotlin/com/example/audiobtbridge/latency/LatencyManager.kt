@@ -3,7 +3,7 @@ package com.example.audiobtbridge.latency
 enum class LatencyMode {
     LOW_LATENCY,
     BALANCED,
-    STABLE
+    HIGH_QUALITY
 }
 
 data class AudioConfig(
@@ -21,12 +21,12 @@ class LatencyManager {
                 complexity = 0
             )
             LatencyMode.BALANCED -> AudioConfig(
-                bufferSize = 6,
+                bufferSize = 6, // 改回原來的 6
                 bitrate = 128000,
                 complexity = 5
             )
-            LatencyMode.STABLE -> AudioConfig(
-                bufferSize = 20,
+            LatencyMode.HIGH_QUALITY -> AudioConfig(
+                bufferSize = 20, // 改回原來的 20
                 bitrate = 320000,
                 complexity = 10
             )

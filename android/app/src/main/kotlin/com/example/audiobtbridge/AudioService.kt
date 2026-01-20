@@ -2,6 +2,7 @@ package com.example.audiobtbridge
 
 import android.app.*
 import android.content.*
+import android.media.AudioManager
 import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -92,7 +93,7 @@ class AudioService : Service() {
 
         if (!isRunning) {
             val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
-            val savedMode = prefs.getString("preset", "BALANCED")?.uppercase() ?: "BALANCED"
+            val savedMode = prefs.getString("preset", "HIGH_QUALITY")?.uppercase() ?: "HIGH_QUALITY"
             val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCED }
             _latencyModeFlow.value = initialMode
             
@@ -138,6 +139,8 @@ class AudioService : Service() {
         }
 
         serviceScope.launch {
+            // 設置為高優先級，減少背景爆裂聲
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
             try {
                 val socket = DatagramSocket(12345)
                 socket.receiveBufferSize = 1024 * 1024
@@ -197,6 +200,7 @@ class AudioService : Service() {
     }
 
     private fun updateLatencyMode(mode: LatencyMode) {
+        Log.i("AudioBT", "Switching to mode: ${mode.name}")
         _latencyModeFlow.value = mode
         val config = latencyManager.getConfigForMode(mode)
         NativeBridge.setBufferSize(config.bufferSize)
@@ -205,7 +209,8 @@ class AudioService : Service() {
 
     private fun sendConfigToServer(config: AudioConfig) {
         val target = serverAddress ?: return
-        serviceScope.launch {
+        // 使用 Dispatchers.Main.immediate 或直接啟動以減少切換延遲
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 val socket = DatagramSocket()
                 val buffer = ByteBuffer.allocate(6).order(ByteOrder.LITTLE_ENDIAN)
@@ -216,7 +221,10 @@ class AudioService : Service() {
                 val packet = DatagramPacket(data, data.size, target, 12345)
                 socket.send(packet)
                 socket.close()
-            } catch (e: Exception) { }
+                Log.d("AudioBT", "Config sent to server: ${config.bitrate}bps")
+            } catch (e: Exception) {
+                Log.e("AudioBT", "Failed to send config: ${e.message}")
+            }
         }
     }
 
@@ -255,26 +263,29 @@ class AudioService : Service() {
         val filter = IntentFilter().apply {
             addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
         bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                        Log.i("AudioBT", "Bluetooth disconnected, stopping service")
+                        Log.i("AudioBT", "Bluetooth ACL disconnected, stopping service")
                         stopSelf()
                     }
                     android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                        Log.i("AudioBT", "Bluetooth connected, restarting native stream")
-                        // 延遲一下確保系統已完成音訊路由切換
+                        Log.i("AudioBT", "Bluetooth ACL connected, re-initializing stream")
                         serviceScope.launch {
-                            delay(1000)
+                            delay(500)
                             NativeBridge.stopNative()
-                            delay(200)
+                            delay(300)
                             NativeBridge.initNative()
-                            // 重啟後需要重新設定緩衝大小
                             val currentConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
                             NativeBridge.setBufferSize(currentConfig.bufferSize)
                         }
+                    }
+                    AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
+                        Log.i("AudioBT", "Audio becoming noisy (Headset unplugged), stopping service")
+                        stopSelf()
                     }
                 }
             }

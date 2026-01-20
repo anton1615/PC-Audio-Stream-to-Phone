@@ -76,7 +76,7 @@ fun MainScreen(context: Context) {
 
         Text("Preset Selection:", style = MaterialTheme.typography.titleMedium)
         
-        val radioOptions = listOf(LatencyMode.STABLE, LatencyMode.BALANCED, LatencyMode.LOW_LATENCY)
+        val radioOptions = listOf(LatencyMode.HIGH_QUALITY, LatencyMode.BALANCED, LatencyMode.LOW_LATENCY)
         Column(Modifier.selectableGroup()) {
             radioOptions.forEach { mode ->
                 Row(
