@@ -32,6 +32,8 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Android 15 (16KB) Ready**: Native libraries are 16KB page-aligned for compatibility with modern hardware like Pixel 6a/7/8.
 *   **Hot-swapping Support**: Automatically detects Bluetooth headset connection/disconnection and routes audio without restarting the app.
 *   **Stability First**: 4-preset system to balance between extreme low latency and rock-solid background playback.
+*   **Packet Loss Concealment (PLC)**: Uses Opus native PLC to handle network drops without audio artifacts.
+*   **Double-Send Redundancy**: Server-side redundancy option to ensure audio stability on unstable Wi-Fi.
 *   **Auto-Discovery**: Support for mDNS (Bonjour) for easy connection.
 
 ## Supported Platforms

@@ -48,15 +48,17 @@ fn load_embedded_icon() -> Icon {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let is_running = Arc::new(AtomicBool::new(false)); 
+    let is_running = Arc::new(AtomicBool::new(false));
+    let redundancy_enabled = Arc::new(AtomicBool::new(true));
     let (ui_stats_tx, ui_stats_rx) = unbounded::<UiMessage>();
     let (cmd_tx, mut cmd_rx) = tokio_mpsc::channel::<UiCommand>(10);
     let is_ui_visible = Arc::new(AtomicBool::new(true));
-    
+
     let main_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
 
     // --- Server Thread ---
     let is_running_server = is_running.clone();
+    let redundancy_enabled_server = redundancy_enabled.clone();
     let ui_stats_tx_server = ui_stats_tx.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -69,10 +71,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 if !server_active {
                     is_running_server.store(false, Ordering::SeqCst);
-                    while let Some(cmd) = cmd_rx.recv().await { 
-                        let UiCommand::ToggleServer = cmd;
-                        server_active = true; 
-                        break; 
+                    while let Some(cmd) = cmd_rx.recv().await {
+                        match cmd {
+                            UiCommand::ToggleServer => {
+                                server_active = true;
+                                break;
+                            }
+                            UiCommand::SetRedundancy(enabled) => {
+                                redundancy_enabled_server.store(enabled, Ordering::SeqCst);
+                                let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
+                            }
+                        }
                     }
                 }
                 is_running_server.store(true, Ordering::SeqCst);
@@ -81,27 +90,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut buf = [0u8; 1024];
                 loop {
                     tokio::select! {
-                        msg = cmd_rx.recv() => { if let Some(_) = msg { server_active = false; break; } }
+                        msg = cmd_rx.recv() => { 
+                            if let Some(cmd) = msg { 
+                                match cmd {
+                                    UiCommand::ToggleServer => { server_active = false; break; }
+                                    UiCommand::SetRedundancy(enabled) => {
+                                        redundancy_enabled_server.store(enabled, Ordering::SeqCst);
+                                        let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
+                                    }
+                                }
+                            } 
+                        }
                         result = socket.recv_from(&mut buf) => { if let Ok((len, addr)) = result { if len >= 12 && &buf[0..12] == b"AS2P_HELLO__" { target_addr = format!("{}:12345", addr.ip()); break; } } }
                     }
                 }
                 if !server_active { continue; }
                 let mut udp_sender = match UdpSender::new(&target_addr).await { Ok(s) => s, Err(_) => continue };
+                udp_sender.redundancy = redundancy_enabled_server.load(Ordering::SeqCst);
+                
                 let mut capturer = match AudioCapturer::new() { Ok(c) => c, Err(_) => continue };
                 let mut encoder = match create_encoder() { Ok(e) => e, Err(_) => continue };
-                
+
                 let mut current_bitrate = 128000;
                 let mut current_complexity = 5;
                 let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
-                
+
                 let mut pcm_buffer = Vec::with_capacity(1920 * 10);
                 loop {
                     tokio::select! {
-                        cmd = cmd_rx.recv() => { if let Some(_) = cmd { server_active = false; break; } }
-                        
+                        cmd_msg = cmd_rx.recv() => { 
+                            if let Some(cmd) = cmd_msg { 
+                                match cmd {
+                                    UiCommand::ToggleServer => { server_active = false; break; }
+                                    UiCommand::SetRedundancy(enabled) => {
+                                        redundancy_enabled_server.store(enabled, Ordering::SeqCst);
+                                        udp_sender.redundancy = enabled;
+                                        let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
+                                    }
+                                }
+                            } 
+                        }
+
                         // --- Receive Control Packets (0x02: Config, 0x03: Disconnect) ---
-                        result = socket.recv_from(&mut buf) => {
-                            if let Ok((len, _addr)) = result {
+                        result = socket.recv_from(&mut buf) => {                            if let Ok((len, _addr)) = result {
                                 if len >= 6 && buf[0] == 0x02 {
                                     let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
                                     let mut complexity = buf[5] as i32;
@@ -208,10 +239,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let visible = !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool();
             is_ui_visible.store(visible, Ordering::SeqCst);
 
+    // --- Tray Loop ---
+    let tray_menu = Menu::new();
+    let toggle_item = MenuItem::with_id("toggle", "Hide Window", true, None);
+    let server_item = MenuItem::with_id("server_toggle", "Start Server", true, None);
+    let redundancy_item = MenuItem::with_id("redundancy_toggle", "Enable Redundancy", true, None);
+    let quit_item = MenuItem::with_id("quit", "Quit", true, None);
+    let _ = tray_menu.append_items(&[
+        &toggle_item, 
+        &server_item, 
+        &redundancy_item,
+        &MenuItem::new("---", false, None), 
+        &quit_item
+    ]);
+
+    let tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_icon(load_embedded_icon())
+        .with_tooltip("AS2P Audio Server")
+        .build()?;
+
+    let menu_channel = MenuEvent::receiver();
+    let tray_channel = TrayIconEvent::receiver();
+
+    let mut msg = MSG::default();
+    unsafe {
+        while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+
+            let hwnd = FindWindowW(None, w!("AS2P_SERVER_UI")).unwrap_or(HWND(std::ptr::null_mut()));
+            let visible = !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool();
+            is_ui_visible.store(visible, Ordering::SeqCst);
+
+            let redundancy = redundancy_enabled.load(Ordering::SeqCst);
+
             let _ = toggle_item.set_text(if visible { "Hide Window" } else { "Show Window" });
             let _ = server_item.set_text(if is_running.load(Ordering::SeqCst) { "Stop Server" } else { "Start Server" });
+            let _ = redundancy_item.set_text(if redundancy { "✓ Enable Redundancy" } else { "Enable Redundancy" });
 
             while let Ok(event) = menu_channel.try_recv() {
+                match event.id.0.as_str() {
+                    "toggle" => {
+                        if !hwnd.0.is_null() {
+                            if visible {
+                                let _ = ShowWindow(hwnd, SW_HIDE);
+                            } else {
+                                // 1. ? Win32 秋▽?
+                                let _ = ShowWindow(hwnd, SW_SHOW);
+                                let _ = ShowWindow(hwnd, SW_RESTORE);
+                                let _ = SetForegroundWindow(hwnd);
+
+                                // 2. ??城???OS 秋▽???賹剜????OS ?∵?魂 (??鞈??謚殷)
+                                let _ = InvalidateRect(hwnd, None, false);
+                                let _ = UpdateWindow(hwnd);
+
+                                // 3. ?????(Jiggle) 蝧 Slint ??皜蜃?Buffer
+                                let ui_weak_clone = ui_weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak_clone.upgrade() {
+                                        let old = ui.get_refresh_counter();
+                                        ui.set_refresh_counter(old + 1);
+                                        ui.window().request_redraw();
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    "server_toggle" => { let _ = cmd_tx.try_send(UiCommand::ToggleServer); }
+                    "redundancy_toggle" => {
+                        let current = redundancy_enabled.load(Ordering::SeqCst);
+                        let _ = cmd_tx.try_send(UiCommand::SetRedundancy(!current));
+                    }
+                    "quit" => { drop(tray_icon); std::process::exit(0); }
+                    _ => {}
+                }
+            }
                 match event.id.0.as_str() {
                     "toggle" => {
                         if !hwnd.0.is_null() {

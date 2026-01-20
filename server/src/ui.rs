@@ -16,22 +16,23 @@ slint::slint! {
         in property <string> packets_text: "0 packets";
         in property <string> client_text: "None";
         in property <int> refresh_counter: 0;
+        in-out property <bool> redundancy_enabled: true;
 
         callback toggle_server();
+        callback toggle_redundancy(bool);
 
-        title: "AS2P_SERVER_UI"; 
+        title: "AS2P_SERVER_UI";
         icon: @image-url("../../as2p.png");
         width: 400px;
-        height: 300px;
+        height: 350px;
         background: #1e1e1e;
 
-        // [CRITICAL FIX] 背景顏色強制連動 refresh_counter
-        // 這會迫使渲染器在 counter 改變時，重新粉刷整個視窗背景
-        Rectangle {
+        // [CRITICAL FIX] ?魂遴唳??? refresh_counter
+        // ?謕?擗??賃祗 counter ?撖??蹇???皜蜃????        Rectangle {
             width: 100%;
             height: 100%;
             background: root.refresh_counter >= 0 ? #1e1e1e : #1e1e1e;
-            
+
             VerticalLayout {
                 padding: 25px;
                 spacing: 12px;
@@ -43,6 +44,27 @@ slint::slint! {
                     Text { text: root.status_text; color: root.is_streaming ? #00ff00 : #ff5555; font-size: 16px; font-weight: 700; }
                 }
                 Button { text: root.is_streaming ? "Stop Server" : "Start Server"; height: 40px; clicked => { root.toggle_server(); } }
+                
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    Text { text: "Enable Redundancy (Double Send):"; color: #cccccc; font-size: 14px; vertical-alignment: center; }
+                    // Simple checkbox-like behavior using a Rectangle and TouchArea since Slint std CheckBox might not be styled consistently here
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        background: root.redundancy_enabled ? #00ff00 : #444444;
+                        border-radius: 4px;
+                        TouchArea {
+                            clicked => { 
+                                root.redundancy_enabled = !root.redundancy_enabled;
+                                root.toggle_redundancy(root.redundancy_enabled);
+                            }
+                        }
+                        Text { text: root.redundancy_enabled ? "✔" : ""; color: black; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
                 Rectangle { height: 1px; background: #333333; }
                 VerticalLayout {
                     spacing: 4px;
@@ -58,10 +80,14 @@ slint::slint! {
 
 pub enum UiMessage {
     UpdateStats { packets: u64, bitrate: i32, client_ip: Option<String> },
+    SyncRedundancy(bool),
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum UiCommand { ToggleServer }
+pub enum UiCommand { 
+    ToggleServer,
+    SetRedundancy(bool),
+}
 
 pub struct UiState {
     pub is_running: Arc<AtomicBool>,
@@ -93,18 +119,21 @@ pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<A
     let cmd_tx_ui = state.cmd_tx.clone();
     window.on_toggle_server(move || { let _ = cmd_tx_ui.try_send(UiCommand::ToggleServer); });
 
+    let cmd_tx_redundancy = state.cmd_tx.clone();
+    window.on_toggle_redundancy(move |enabled| { let _ = cmd_tx_redundancy.try_send(UiCommand::SetRedundancy(enabled)); });
+
     let window_weak = window.as_weak();
     let is_running_timer = state.is_running.clone();
     let stats_rx_timer = state.stats_rx.clone();
     let timer = slint::Timer::default();
-    
-    // 初次啟動強制觸發一次 counter
+
+    // ?豲暑?賹?鞎赤?counter
     window.set_refresh_counter(1);
 
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
         if let Some(ui) = window_weak.upgrade() {
-            // [IMPORTANT] 不再檢查 is_visible，持續驅動更新
-            let running = is_running_timer.load(Ordering::SeqCst);
+            // [IMPORTANT] ?潘撓貔 is_visible?伐????            let running = is_running_timer.load(Ordering::SeqCst
+);
             ui.set_is_streaming(running);
             ui.set_status_text(if running { "Streaming".into() } else { "Idle".into() });
             while let Ok(msg) = stats_rx_timer.try_recv() {
@@ -113,6 +142,9 @@ pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<A
                         ui.set_packets_text(format!("{} packets", packets).into());
                         ui.set_bitrate_text(format!("{} bps", bitrate).into());
                         ui.set_client_text(client_ip.unwrap_or_else(|| "None".to_string()).into());
+                    }
+                    UiMessage::SyncRedundancy(enabled) => {
+                        ui.set_redundancy_enabled(enabled);
                     }
                 }
             }

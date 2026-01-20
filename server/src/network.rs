@@ -4,6 +4,7 @@ use tokio::net::UdpSocket;
 pub struct UdpSender {
     socket: UdpSocket,
     target: SocketAddr,
+    pub redundancy: bool,
 }
 
 impl UdpSender {
@@ -13,6 +14,7 @@ impl UdpSender {
         Ok(Self {
             socket,
             target: target_addr,
+            redundancy: true,
         })
     }
 
@@ -20,8 +22,14 @@ impl UdpSender {
         let mut packet = Vec::with_capacity(8 + payload.len());
         packet.extend_from_slice(&sequence.to_le_bytes());
         packet.extend_from_slice(&payload);
-        
+
         self.socket.send_to(&packet, self.target).await.map_err(|e| e.to_string())?;
+        
+        if self.redundancy {
+            // Re-send the same packet for redundancy
+            let _ = self.socket.send_to(&packet, self.target).await;
+        }
+        
         Ok(())
     }
 }
