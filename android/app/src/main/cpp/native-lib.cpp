@@ -42,6 +42,9 @@ public:
             mJitterBuffer.clear();
             mDecodedPcmBuffer.clear();
             mIsBuffering = true;
+            mFirstPacket = true;
+            mExpectedSeq = 0;
+            mPLCCount = 0;
         }
 
         oboe::AudioStreamBuilder builder;
@@ -110,16 +113,56 @@ public:
             }
         }
 
-        while (mDecodedPcmBuffer.size() < totalSamplesNeeded && !mJitterBuffer.empty()) {
+        while (mDecodedPcmBuffer.size() < totalSamplesNeeded && (!mJitterBuffer.empty() || !mFirstPacket)) {
+            if (mJitterBuffer.empty()) {
+                // Buffer is empty but we've started playback, perform PLC to smooth out silence
+                float decodeOut[MAX_FRAME_SIZE * CHANNELS];
+                int decodedFrames = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
+                if (decodedFrames > 0) {
+                    mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decodedFrames * CHANNELS));
+                    mExpectedSeq++;
+                    mPLCCount++;
+                    if (mPLCCount % 50 == 0) LOGI("PLC triggered due to empty buffer (continuous count: %d)", mPLCCount);
+                } else {
+                    break; 
+                }
+                continue;
+            }
+
             auto it = mJitterBuffer.begin();
-            mLastSeq = it->first; // 更新為正在解碼的包序號
-            
+            uint64_t currentSeq = it->first;
+
+            if (mFirstPacket) {
+                mExpectedSeq = currentSeq;
+                mFirstPacket = false;
+            }
+
+            if (currentSeq > mExpectedSeq) {
+                // Gap detected, trigger PLC for missing packet
+                float decodeOut[MAX_FRAME_SIZE * CHANNELS];
+                int decodedFrames = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
+                if (decodedFrames > 0) {
+                    mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decodedFrames * CHANNELS));
+                    mExpectedSeq++;
+                    mPLCCount++;
+                    LOGI("PLC triggered for sequence gap: expected %llu, got %llu", (unsigned long long)mExpectedSeq - 1, (unsigned long long)currentSeq);
+                    continue; // Re-evaluate with same it
+                }
+            } else if (currentSeq < mExpectedSeq) {
+                // Late packet, discard it to maintain sync
+                mJitterBuffer.erase(it);
+                continue;
+            }
+
+            // Normal sequential decode
+            mLastSeq = currentSeq;
             float decodeOut[MAX_FRAME_SIZE * CHANNELS];
             int decodedFrames = opus_decode_float(mOpusDecoder, it->second.data(), it->second.size(), decodeOut, MAX_FRAME_SIZE, 0);
 
             if (decodedFrames > 0) {
                 mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decodedFrames * CHANNELS));
             }
+            mExpectedSeq++;
             mJitterBuffer.erase(it);
         }
 
@@ -140,16 +183,23 @@ public:
         
         // 不論變大變小，只要變動就強制重啟緩衝
         // 清空舊緩衝區，防止不同 Bitrate 混合導致的雜音或解碼異常
-        mJitterBuffer.clear();
-        mDecodedPcmBuffer.clear();
-        mIsBuffering = true; 
+                mJitterBuffer.clear();
+                mDecodedPcmBuffer.clear();
+                mIsBuffering = true;
+                mFirstPacket = true;
+                mExpectedSeq = 0;
+                mPLCCount = 0;
         
-        LOGI("Buffer size updated to %d, re-buffering forced...", mTargetBufferSize);
-    }
+                LOGI("Buffer size updated to %d, re-buffering forced...", mTargetBufferSize);    }
 
     int getBufferDepth() {
         std::lock_guard<std::mutex> lock(mBufferMutex);
         return (int)mJitterBuffer.size();
+    }
+
+    int getPLCCount() {
+        std::lock_guard<std::mutex> lock(mBufferMutex);
+        return mPLCCount;
     }
 
     uint64_t getLastSequence() {
@@ -177,11 +227,13 @@ private:
     std::vector<float> mDecodedPcmBuffer;
     std::mutex mBufferMutex;
     OpusDecoder *mOpusDecoder = nullptr;
-    bool mIsBuffering = true; 
-    int mTargetBufferSize = 15; 
-    uint64_t mLastSeq = 0;
-};
-
+        bool mIsBuffering = true;
+        int mTargetBufferSize = 15;
+        uint64_t mLastSeq = 0;
+        uint64_t mExpectedSeq = 0;
+        bool mFirstPacket = true;
+        int mPLCCount = 0;
+    };
 static AudioEngine gAudioEngine;
 
 extern "C" {
@@ -197,6 +249,9 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setBufferSize
 }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) {
     return gAudioEngine.getBufferDepth();
+}
+JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) {
+    return gAudioEngine.getPLCCount();
 }
 JNIEXPORT jlong JNICALL Java_com_example_audiobtbridge_NativeBridge_getLastSequence(JNIEnv *env, jobject thiz) {
     return (jlong)gAudioEngine.getLastSequence();

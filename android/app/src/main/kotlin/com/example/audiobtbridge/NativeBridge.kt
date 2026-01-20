@@ -9,6 +9,7 @@ object NativeBridge {
     external fun stopNative()
     external fun setBufferSize(size: Int)
     external fun getBufferDepth(): Int
+    external fun getPLCCount(): Int
     external fun getLastSequence(): Long
     external fun writeToNativeBuffer(data: ByteArray, length: Int)
 }
