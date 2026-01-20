@@ -21,8 +21,10 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++17 -z max-page-size=16384"
-                arguments "-DANDROID_STL=c++_shared"
+                cppFlags "-std=c++17"
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
+                          "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
             }
         }
     }
@@ -49,7 +51,7 @@ android {
     }
     packagingOptions {
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
