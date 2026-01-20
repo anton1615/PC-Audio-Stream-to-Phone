@@ -21,7 +21,7 @@ class LatencyManager {
                 complexity = 0
             )
             LatencyMode.BALANCED -> AudioConfig(
-                bufferSize = 6, // 改回原來的 6
+                bufferSize = 10, // 從 6 提升到 10，增加背景穩定性
                 bitrate = 128000,
                 complexity = 5
             )

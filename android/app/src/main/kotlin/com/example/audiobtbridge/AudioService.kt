@@ -3,6 +3,7 @@ package com.example.audiobtbridge
 import android.app.*
 import android.content.*
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -28,6 +29,9 @@ class AudioService : Service() {
     private var lastPacketTime: Long = 0
     private var bluetoothReceiver: BroadcastReceiver? = null
     
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
     private val connectionManager = ConnectionManager()
     private val latencyManager = LatencyManager()
 
@@ -95,16 +99,44 @@ class AudioService : Service() {
             val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
             val savedMode = prefs.getString("preset", "HIGH_QUALITY")?.uppercase() ?: "HIGH_QUALITY"
             val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCED }
-            _latencyModeFlow.value = initialMode
+                        _latencyModeFlow.value = initialMode
             
-            startForegroundService()
-            startAudioStream()
-        }
-
-        return START_STICKY
-    }
-
-    private fun startForegroundService() {
+                        acquireLocks()
+                        startForegroundService()
+                        startAudioStream()
+                    }
+            
+                    return START_STICKY
+                }
+            
+                private fun acquireLocks() {
+                    val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                    wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioBT:WakeLock").apply {
+                        acquire()
+                    }
+            
+                    val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
+                    wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AudioBT:WifiLock").apply {
+                        acquire()
+                    }
+                    Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (FULL_HIGH_PERF)")
+                }
+            
+                private fun releaseLocks() {
+                    wakeLock?.let {
+                        if (it.isHeld) it.release()
+                    }
+                    wakeLock = null
+            
+                    wifiLock?.let {
+                        if (it.isHeld) it.release()
+                    }
+                    wifiLock = null
+                    Log.i("AudioBT", "Locks released")
+                }
+            
+                private fun startForegroundService() {
+            
         createNotificationChannel()
         
         val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
@@ -244,6 +276,7 @@ class AudioService : Service() {
         isRunning = false
         sendDisconnectToServer()
         
+        releaseLocks()
         _serviceState.value = false
         packetCount = 0
         _packetCountFlow.value = 0
