@@ -100,8 +100,9 @@ public:
         // 優先初始化輸出為 0
         for (int i = 0; i < totalSamplesNeeded; ++i) output[i] = 0.0f;
 
-        std::unique_lock<std::mutex> lock(mBufferMutex, std::try_to_lock);
-        if (!lock.owns_lock()) return oboe::DataCallbackResult::Continue; // 如果拿不到鎖，直接跳過這幀，避免爆音
+        // 使用阻塞鎖，確保音訊線程不會因為拿不到鎖而直接放棄輸出（導致斷音和延遲累積）
+        // pushPacket 的臨界區非常短（Map 插入），阻塞是可以接受的
+        std::lock_guard<std::mutex> lock(mBufferMutex);
         
         int threshold = std::max(1, mTargetBufferSize);
         if (mIsBuffering) {

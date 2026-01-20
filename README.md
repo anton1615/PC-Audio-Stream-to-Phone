@@ -95,3 +95,9 @@ Download the latest versions (v1.0.3) from the [Releases](https://github.com/ant
 *   **No Audio Captured**: Ensure your PC is playing sound through the default output device *before* starting the server.  
 ## License
 Licensed under the [MIT License](LICENSE).
+## Known Limitations / Testing Status (2026-01-20)
+- **Network Stability**: Transmission optimizations (PLC, Redundancy) and audio thread priority fixes (for lock contention) have been verified in **stable WiFi environments**.
+- **Unverified Scenarios**: **Stress testing under unstable network conditions (high packet loss/high jitter)** has **NOT** been performed due to environmental constraints and lack of specialized simulation tools.
+- **Potential Issues**: If you experience crackling or dropouts in very poor network conditions, please verify if the PLC logic in 
+ative-lib.cpp needs further tuning (e.g., increasing buffer depth or PLC aggressiveness).
+

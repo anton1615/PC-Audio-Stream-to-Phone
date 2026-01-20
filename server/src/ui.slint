@@ -4,64 +4,81 @@ export component AppWindow extends Window {
     in property <string> status_text: "Idle";
     in property <bool> is_streaming: false;
     in property <string> bitrate_text: "128000 bps";
-    in property <string> packets_text: "0 packets";
+    in property <string> packets_text: "0 packets"; // Keep for internal logic if needed, but not display
     in property <string> client_text: "None";
 
     callback toggle_server();
 
     title: "AS2P Server";
     width: 400px;
-    height: 300px;
+    height: 400px;
     background: #1e1e1e;
-    icon: @image-url("", ""); // 可以在此處放置圖示路徑
 
     VerticalLayout {
-        padding: 25px;
-        spacing: 12px;
+        padding: 30px;
+        spacing: 20px;
+        alignment: center;
         
+        // Logo Section
+        Image {
+            source: @image-url("as2p.png");
+            width: 120px;
+            height: 120px;
+            horizontal-alignment: center;
+        }
+
         Text {
             text: "AS2P Server";
-            font-size: 24px;
+            font-size: 28px;
+            font-weight: 800;
             color: white;
             horizontal-alignment: center;
         }
 
-        HorizontalLayout {
+        // Action Section
+        VerticalLayout {
+            spacing: 15px;
             alignment: center;
-            spacing: 8px;
-            Text { text: "Status:"; color: #aaaaaa; font-size: 16px; }
-            Text {
-                text: root.status_text;
-                color: root.is_streaming ? #00ff00 : #ff5555;
-                font-size: 16px;
-                font-weight: 700;
+
+            Button {
+                text: root.is_streaming ? "STOP STREAMING" : "START STREAMING";
+                primary: true;
+                height: 50px;
+                clicked => { root.toggle_server(); }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+                Rectangle {
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 6px;
+                    background: root.is_streaming ? #00ff00 : #ff5555;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.status_text;
+                    color: root.is_streaming ? #00ff00 : #ff5555;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
             }
         }
 
-        Button {
-            text: root.is_streaming ? "Stop Server" : "Start Server";
-            height: 40px;
-            clicked => { root.toggle_server(); }
-        }
-
-        Rectangle { 
-            height: 1px; 
-            background: #333333; 
-        }
-
-        VerticalLayout {
-            spacing: 4px;
+        // Info Section
+        HorizontalLayout {
+            alignment: center;
+            spacing: 20px;
             Text { text: "Bitrate: " + root.bitrate_text; color: #888888; font-size: 14px; }
-            Text { text: "Sent: " + root.packets_text; color: #888888; font-size: 14px; }
             Text { text: "Client: " + root.client_text; color: #888888; font-size: 14px; }
         }
         
         Text {
-            text: "Tip: Close window (X) to hide to tray.";
+            text: "Minimized to Tray when closed";
             font-size: 12px;
             color: #555555;
             horizontal-alignment: center;
-            vertical-alignment: bottom;
         }
     }
 }

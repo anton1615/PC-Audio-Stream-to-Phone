@@ -203,11 +203,10 @@ class AudioService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (Build.VERSION.SDK_INT >= 34) {
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            } else {
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            }
+            // Android 14 (API 34) requires the type to match the manifest.
+            // Since we declared 'mediaPlayback' in Manifest, we MUST use it here.
+            // Using 'CONNECTED_DEVICE' when manifest says 'mediaPlayback' causes a crash.
+            val type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
             startForeground(NOTIFICATION_ID, notification, type)
         } else {
             startForeground(NOTIFICATION_ID, notification)

@@ -41,7 +41,7 @@ fn load_embedded_icon() -> Icon {
         .decode()
         .expect("Failed to decode icon")
         .into_rgba8();
-    
+
     let (width, height) = img.dimensions();
     let rgba = img.into_raw();
     Icon::from_rgba(rgba, width, height).expect("Failed to create tray icon")
@@ -132,35 +132,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         // --- Receive Control Packets (0x02: Config, 0x03: Disconnect) ---
-                        result = socket.recv_from(&mut buf) => {                            if let Ok((len, _addr)) = result {
+                        result = socket.recv_from(&mut buf) => {
+                            if let Ok((len, _addr)) = result {
                                 if len >= 6 && buf[0] == 0x02 {
                                     let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
                                     let mut complexity = buf[5] as i32;
 
-                                    // Security: Validate input bounds to prevent DoS/High CPU
                                     if bitrate < 16000 { bitrate = 16000; }
                                     if bitrate > 512000 { bitrate = 512000; }
                                     if complexity < 0 { complexity = 0; }
                                     if complexity > 10 { complexity = 10; }
 
-                                    println!("Updating encoder: bitrate={}bps, complexity={}", bitrate, complexity);
                                     if let Ok(_) = configure_encoder(&mut encoder, bitrate, complexity) {
                                         current_bitrate = bitrate;
                                         current_complexity = complexity;
-                                        // 立即發送一次 UI 更新，確保顯示同步
-                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                                            packets: sequence, 
-                                            bitrate: current_bitrate, 
-                                            client_ip: Some(target_addr.clone()) 
+                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
+                                            packets: sequence,
+                                            bitrate: current_bitrate,
+                                            client_ip: Some(target_addr.clone())
                                         });
                                     }
                                 } else if len >= 1 && buf[0] == 0x03 {
-                                    println!("Client requested disconnect. Resetting UI stats.");
-                                    // 不要關閉 server_active，只需跳出傳輸迴圈等待下一次連線
-                                    let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                                        packets: 0, 
-                                        bitrate: 128000, 
-                                        client_ip: None 
+                                    let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
+                                        packets: 0,
+                                        bitrate: 128000,
+                                        client_ip: None
                                     });
                                     break;
                                 }
@@ -176,21 +172,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !data.is_empty() { let _ = udp_sender.send_audio_with_seq(sequence, data).await; sequence += 1; }
                                 }
                             }
-                            if sequence > 0 && sequence % 500 == 0 { 
-                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                                    packets: sequence, 
-                                    bitrate: current_bitrate, 
-                                    client_ip: Some(target_addr.clone()) 
-                                }); 
+                            if sequence > 0 && sequence % 500 == 0 {
+                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
+                                    packets: sequence,
+                                    bitrate: current_bitrate,
+                                    client_ip: Some(target_addr.clone())
+                                });
                             }
                         }
                     }
                 }
-                // 當跳出傳輸迴圈時（不論是 client 斷開還是手動停止），重置 UI 顯示
-                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                    packets: 0, 
-                    bitrate: 128000, 
-                    client_ip: None 
+                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
+                    packets: 0,
+                    bitrate: 128000,
+                    client_ip: None
                 });
             }
         });
@@ -217,39 +212,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_menu = Menu::new();
     let toggle_item = MenuItem::with_id("toggle", "Hide Window", true, None);
     let server_item = MenuItem::with_id("server_toggle", "Start Server", true, None);
-    let quit_item = MenuItem::with_id("quit", "Quit", true, None);
-    let _ = tray_menu.append_items(&[&toggle_item, &server_item, &MenuItem::new("---", false, None), &quit_item]);
-    
-    let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
-        .with_icon(load_embedded_icon())
-        .with_tooltip("AS2P Audio Server")
-        .build()?;
-
-    let menu_channel = MenuEvent::receiver();
-    let tray_channel = TrayIconEvent::receiver();
-
-    let mut msg = MSG::default();
-    unsafe {
-        while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-            
-            let hwnd = FindWindowW(None, w!("AS2P_SERVER_UI")).unwrap_or(HWND(std::ptr::null_mut()));
-            let visible = !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool();
-            is_ui_visible.store(visible, Ordering::SeqCst);
-
-    // --- Tray Loop ---
-    let tray_menu = Menu::new();
-    let toggle_item = MenuItem::with_id("toggle", "Hide Window", true, None);
-    let server_item = MenuItem::with_id("server_toggle", "Start Server", true, None);
     let redundancy_item = MenuItem::with_id("redundancy_toggle", "Enable Redundancy", true, None);
     let quit_item = MenuItem::with_id("quit", "Quit", true, None);
     let _ = tray_menu.append_items(&[
-        &toggle_item, 
-        &server_item, 
+        &toggle_item,
+        &server_item,
         &redundancy_item,
-        &MenuItem::new("---", false, None), 
+        &MenuItem::new("---", false, None),
         &quit_item
     ]);
 
@@ -276,7 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let _ = toggle_item.set_text(if visible { "Hide Window" } else { "Show Window" });
             let _ = server_item.set_text(if is_running.load(Ordering::SeqCst) { "Stop Server" } else { "Start Server" });
-            let _ = redundancy_item.set_text(if redundancy { "✓ Enable Redundancy" } else { "Enable Redundancy" });
+            let _ = redundancy_item.set_text(if redundancy { "\u{2713} Enable Redundancy" } else { "Enable Redundancy" });
 
             while let Ok(event) = menu_channel.try_recv() {
                 match event.id.0.as_str() {
@@ -285,16 +254,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if visible {
                                 let _ = ShowWindow(hwnd, SW_HIDE);
                             } else {
-                                // 1. ? Win32 秋▽?
                                 let _ = ShowWindow(hwnd, SW_SHOW);
                                 let _ = ShowWindow(hwnd, SW_RESTORE);
                                 let _ = SetForegroundWindow(hwnd);
-
-                                // 2. ??城???OS 秋▽???賹剜????OS ?∵?魂 (??鞈??謚殷)
                                 let _ = InvalidateRect(hwnd, None, false);
                                 let _ = UpdateWindow(hwnd);
 
-                                // 3. ?????(Jiggle) 蝧 Slint ??皜蜃?Buffer
                                 let ui_weak_clone = ui_weak.clone();
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = ui_weak_clone.upgrade() {
@@ -315,49 +280,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 }
             }
-                match event.id.0.as_str() {
-                    "toggle" => {
-                        if !hwnd.0.is_null() {
-                            if visible {
-                                let _ = ShowWindow(hwnd, SW_HIDE);
-                            } else {
-                                // 1. 先用 Win32 強制顯示視窗
-                                let _ = ShowWindow(hwnd, SW_SHOW);
-                                let _ = ShowWindow(hwnd, SW_RESTORE);
-                                let _ = SetForegroundWindow(hwnd);
-                                
-                                // 2. 強力刷新：告知 OS 視窗區域已失效，但不要求 OS 擦除背景 (解決白屏關鍵)
-                                let _ = InvalidateRect(hwnd, None, false);
-                                let _ = UpdateWindow(hwnd);
-                                
-                                // 3. 透過屬性抖動 (Jiggle) 強迫 Slint 重新繪製整個 Buffer
-                                let ui_weak_clone = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak_clone.upgrade() {
-                                        let old = ui.get_refresh_counter();
-                                        ui.set_refresh_counter(old + 1);
-                                        ui.window().request_redraw();
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    "server_toggle" => { let _ = cmd_tx.try_send(UiCommand::ToggleServer); }
-                    "quit" => { drop(tray_icon); std::process::exit(0); }
-                    _ => {}
-                }
-            }
             while let Ok(event) = tray_channel.try_recv() {
                 if let TrayIconEvent::DoubleClick { .. } = event {
                     if !hwnd.0.is_null() {
                         let _ = ShowWindow(hwnd, SW_SHOW);
                         let _ = ShowWindow(hwnd, SW_RESTORE);
                         let _ = SetForegroundWindow(hwnd);
-
-                        unsafe {
-                            let _ = InvalidateRect(hwnd, None, false);
-                            let _ = UpdateWindow(hwnd);
-                        }
+                        let _ = InvalidateRect(hwnd, None, false);
+                        let _ = UpdateWindow(hwnd);
 
                         let ui_weak_clone = ui_weak.clone();
                         let _ = slint::invoke_from_event_loop(move || {

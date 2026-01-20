@@ -22,57 +22,100 @@ slint::slint! {
         callback toggle_redundancy(bool);
 
         title: "AS2P_SERVER_UI";
-        icon: @image-url("../../as2p.png");
         width: 400px;
-        height: 350px;
+        height: 450px;
         background: #1e1e1e;
 
-        // [CRITICAL FIX] ?魂遴唳??? refresh_counter
-        // ?謕?擗??賃祗 counter ?撖??蹇???皜蜃????        Rectangle {
+        Rectangle {
             width: 100%;
             height: 100%;
             background: root.refresh_counter >= 0 ? #1e1e1e : #1e1e1e;
 
             VerticalLayout {
-                padding: 25px;
-                spacing: 12px;
-                Text { text: "AS2P Server"; font-size: 24px; color: white; horizontal-alignment: center; }
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 8px;
-                    Text { text: "Status:"; color: #aaaaaa; font-size: 16px; }
-                    Text { text: root.status_text; color: root.is_streaming ? #00ff00 : #ff5555; font-size: 16px; font-weight: 700; }
+                padding: 30px;
+                spacing: 20px;
+                alignment: center;
+
+                // Logo
+                Image {
+                    source: @image-url("as2p.png");
+                    width: 120px;
+                    height: 120px;
+                    horizontal-alignment: center;
                 }
-                Button { text: root.is_streaming ? "Stop Server" : "Start Server"; height: 40px; clicked => { root.toggle_server(); } }
                 
-                HorizontalLayout {
+                Text { 
+                    text: "AS2P Server"; 
+                    font-size: 28px; 
+                    font-weight: 800;
+                    color: white; 
+                    horizontal-alignment: center; 
+                }
+
+                // Action Area
+                VerticalLayout {
+                    spacing: 15px;
                     alignment: center;
-                    spacing: 10px;
-                    Text { text: "Enable Redundancy (Double Send):"; color: #cccccc; font-size: 14px; vertical-alignment: center; }
-                    // Simple checkbox-like behavior using a Rectangle and TouchArea since Slint std CheckBox might not be styled consistently here
-                    Rectangle {
-                        width: 20px;
-                        height: 20px;
-                        background: root.redundancy_enabled ? #00ff00 : #444444;
-                        border-radius: 4px;
-                        TouchArea {
-                            clicked => { 
-                                root.redundancy_enabled = !root.redundancy_enabled;
-                                root.toggle_redundancy(root.redundancy_enabled);
-                            }
+
+                    Button { 
+                        text: root.is_streaming ? "STOP STREAMING" : "START STREAMING"; 
+                        primary: true;
+                        height: 50px; 
+                        clicked => { root.toggle_server(); } 
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 12px;
+                            height: 12px;
+                            border-radius: 6px;
+                            background: root.is_streaming ? #00ff00 : #ff5555;
+                            y: (parent.height - self.height) / 2;
                         }
-                        Text { text: root.redundancy_enabled ? "✔" : ""; color: black; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { 
+                            text: root.status_text; 
+                            color: root.is_streaming ? #00ff00 : #ff5555; 
+                            font-size: 18px; 
+                            font-weight: 700; 
+                        }
                     }
                 }
 
-                Rectangle { height: 1px; background: #333333; }
+                // Configuration / Info
                 VerticalLayout {
-                    spacing: 4px;
-                    Text { text: "Bitrate: " + root.bitrate_text; color: #888888; font-size: 14px; }
-                    Text { text: "Sent: " + root.packets_text; color: #888888; font-size: 14px; }
-                    Text { text: "Client: " + root.client_text; color: #888888; font-size: 14px; }
+                    spacing: 10px;
+                    alignment: center;
+                    
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        Text { text: "Double Send Redundancy:"; color: #cccccc; font-size: 14px; vertical-alignment: center; }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            background: root.redundancy_enabled ? #00ff00 : #444444;
+                            border-radius: 4px;
+                            TouchArea {
+                                clicked => { 
+                                    root.redundancy_enabled = !root.redundancy_enabled;
+                                    root.toggle_redundancy(root.redundancy_enabled);
+                                }
+                            }
+                            Text { text: root.redundancy_enabled ? "✔" : ""; color: black; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 20px;
+                        Text { text: "Bitrate: " + root.bitrate_text; color: #888888; font-size: 14px; }
+                        Text { text: "Client: " + root.client_text; color: #888888; font-size: 14px; }
+                    }
                 }
-                Text { text: "Tip: Close window (X) to hide to tray."; font-size: 12px; color: #555555; horizontal-alignment: center; vertical-alignment: bottom; }
+
+                Text { text: "Minimized to Tray when closed"; font-size: 12px; color: #555555; horizontal-alignment: center; }
             }
         }
     }
@@ -127,13 +170,11 @@ pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<A
     let stats_rx_timer = state.stats_rx.clone();
     let timer = slint::Timer::default();
 
-    // ?豲暑?賹?鞎赤?counter
     window.set_refresh_counter(1);
 
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
         if let Some(ui) = window_weak.upgrade() {
-            // [IMPORTANT] ?潘撓貔 is_visible?伐????            let running = is_running_timer.load(Ordering::SeqCst
-);
+            let running = is_running_timer.load(Ordering::SeqCst);
             ui.set_is_streaming(running);
             ui.set_status_text(if running { "Streaming".into() } else { "Idle".into() });
             while let Ok(msg) = stats_rx_timer.try_recv() {
