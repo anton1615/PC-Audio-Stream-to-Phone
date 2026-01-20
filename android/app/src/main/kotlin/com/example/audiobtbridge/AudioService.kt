@@ -74,7 +74,6 @@ class AudioService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        NativeBridge.initNative()
         registerBluetoothReceiver()
     }
 
@@ -96,47 +95,52 @@ class AudioService : Service() {
         }
 
         if (!isRunning) {
+            try {
+                NativeBridge.initNative()
+            } catch (e: Throwable) {
+                Log.e("AudioBT", "Failed to initialize native bridge: ${e.message}")
+            }
+            
             val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
             val savedMode = prefs.getString("preset", "HIGH_QUALITY")?.uppercase() ?: "HIGH_QUALITY"
             val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCED }
-                        _latencyModeFlow.value = initialMode
-            
-                        acquireLocks()
-                        startForegroundService()
-                        startAudioStream()
-                    }
-            
-                    return START_STICKY
-                }
-            
-                private fun acquireLocks() {
-                    val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                    wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioBT:WakeLock").apply {
-                        acquire()
-                    }
-            
-                    val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
-                    wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AudioBT:WifiLock").apply {
-                        acquire()
-                    }
-                    Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (FULL_HIGH_PERF)")
-                }
-            
-                private fun releaseLocks() {
-                    wakeLock?.let {
-                        if (it.isHeld) it.release()
-                    }
-                    wakeLock = null
-            
-                    wifiLock?.let {
-                        if (it.isHeld) it.release()
-                    }
-                    wifiLock = null
-                    Log.i("AudioBT", "Locks released")
-                }
-            
-                private fun startForegroundService() {
-            
+            _latencyModeFlow.value = initialMode
+
+            acquireLocks()
+            startForegroundService()
+            startAudioStream()
+        }
+
+        return START_STICKY
+    }
+
+    private fun acquireLocks() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioBT:WakeLock").apply {
+            acquire()
+        }
+
+        val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
+        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AudioBT:WifiLock").apply {
+            acquire()
+        }
+        Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (FULL_HIGH_PERF)")
+    }
+
+    private fun releaseLocks() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
+
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wifiLock = null
+        Log.i("AudioBT", "Locks released")
+    }
+
+    private fun startForegroundService() {
         createNotificationChannel()
         
         val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
@@ -151,7 +155,13 @@ class AudioService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            val type = if (Build.VERSION.SDK_INT >= 34) {
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or 
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            } else {
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
+            startForeground(NOTIFICATION_ID, notification, type)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
