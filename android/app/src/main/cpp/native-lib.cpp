@@ -138,6 +138,10 @@ public:
     }
 
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
+        if (len > 2048) {
+            LOGE("Received excessively large packet: %d bytes, ignoring.", len);
+            return;
+        }
         std::lock_guard<std::mutex> lock(mBufferMutex);
         mJitterBuffer[seq] = std::vector<uint8_t>(data, data + len);
         mLastSeq = seq;

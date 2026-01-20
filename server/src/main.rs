@@ -103,8 +103,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         result = socket.recv_from(&mut buf) => {
                             if let Ok((len, _addr)) = result {
                                 if len >= 6 && buf[0] == 0x02 {
-                                    let bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
-                                    let complexity = buf[5] as i32;
+                                    let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
+                                    let mut complexity = buf[5] as i32;
+
+                                    // Security: Validate input bounds to prevent DoS/High CPU
+                                    if bitrate < 16000 { bitrate = 16000; }
+                                    if bitrate > 512000 { bitrate = 512000; }
+                                    if complexity < 0 { complexity = 0; }
+                                    if complexity > 10 { complexity = 10; }
+
                                     println!("Updating encoder: bitrate={}bps, complexity={}", bitrate, complexity);
                                     if let Ok(_) = configure_encoder(&mut encoder, bitrate, complexity) {
                                         current_bitrate = bitrate;
