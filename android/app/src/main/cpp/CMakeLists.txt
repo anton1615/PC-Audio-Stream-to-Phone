@@ -6,11 +6,14 @@ project("audiobtbridge")
 set(CMAKE_CXX_STANDARD 17)
 
 #  Oboe
+
 find_package(oboe CONFIG REQUIRED)
 
-# Enforce 16KB page alignment
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+
+
+# Enforce 16KB page alignment for our library
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384 -Wl,-z,separate-code")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,max-page-size=16384 -Wl,-z,separate-code")
 
 # -----------------------------------------------------------------------------
 # ?﹝璓?Opus (?? FetchContent)
