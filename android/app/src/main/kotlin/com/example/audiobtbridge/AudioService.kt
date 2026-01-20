@@ -19,6 +19,9 @@ import com.example.audiobtbridge.latency.LatencyManager
 import com.example.audiobtbridge.latency.AudioConfig
 import com.example.audiobtbridge.latency.LatencyMode
 
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
+
 class AudioService : Service() {
 
     private val serviceJob = Job()
@@ -28,9 +31,11 @@ class AudioService : Service() {
     private var serverAddress: InetAddress? = null
     private var lastPacketTime: Long = 0
     private var bluetoothReceiver: BroadcastReceiver? = null
+    private var mediaSession: MediaSessionCompat? = null
     
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var audioDeviceCallback: Any? = null
 
     private val connectionManager = ConnectionManager()
     private val latencyManager = LatencyManager()
@@ -43,7 +48,7 @@ class AudioService : Service() {
         private val _packetCountFlow = MutableStateFlow(0)
         val packetCountFlow = _packetCountFlow.asStateFlow()
 
-        private val _latencyModeFlow = MutableStateFlow(LatencyMode.BALANCED)
+        private val _latencyModeFlow = MutableStateFlow(LatencyMode.BALANCE)
         val latencyModeFlow = _latencyModeFlow.asStateFlow()
         
         fun setModeOffline(mode: LatencyMode) {
@@ -75,6 +80,34 @@ class AudioService : Service() {
     override fun onCreate() {
         super.onCreate()
         registerBluetoothReceiver()
+        registerAudioDeviceCallback()
+    }
+
+    private fun registerAudioDeviceCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val callback = object : android.media.AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                    Log.i("AudioBT", "Audio device added, checking for BT...")
+                    addedDevices?.forEach {
+                        if (it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                            Log.i("AudioBT", "Bluetooth device detected, restarting native stream...")
+                            serviceScope.launch {
+                                delay(1000) // 等待系統完成切換
+                                NativeBridge.stopNative()
+                                delay(200)
+                                NativeBridge.initNative()
+                                val currentConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
+                                NativeBridge.setBufferSize(currentConfig.bufferSize)
+                            }
+                        }
+                    }
+                }
+            }
+            audioManager.registerAudioDeviceCallback(callback, Handler(Looper.getMainLooper()))
+            audioDeviceCallback = callback
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -102,8 +135,8 @@ class AudioService : Service() {
             }
             
             val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
-            val savedMode = prefs.getString("preset", "HIGH_QUALITY")?.uppercase() ?: "HIGH_QUALITY"
-            val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCED }
+            val savedMode = prefs.getString("preset", "BALANCE")?.uppercase() ?: "BALANCE"
+            val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCE }
             _latencyModeFlow.value = initialMode
 
             acquireLocks()
@@ -121,10 +154,15 @@ class AudioService : Service() {
         }
 
         val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AudioBT:WifiLock").apply {
+        val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wifiManager.createWifiLock(wifiMode, "AudioBT:WifiLock").apply {
             acquire()
         }
-        Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (FULL_HIGH_PERF)")
+        Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (Low Latency Mode)")
     }
 
     private fun releaseLocks() {
@@ -143,6 +181,14 @@ class AudioService : Service() {
     private fun startForegroundService() {
         createNotificationChannel()
         
+        // Setup MediaSession for background priority
+        mediaSession = MediaSessionCompat(this, "AudioBTBridge").apply {
+            setPlaybackState(PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
+                .build())
+            isActive = true
+        }
+        
         val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
@@ -151,12 +197,13 @@ class AudioService : Service() {
             .setContentText("Receiving audio...")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
+            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                .setMediaSession(mediaSession?.sessionToken))
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stopPendingIntent)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val type = if (Build.VERSION.SDK_INT >= 34) {
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or 
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
             } else {
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE

@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId "com.example.audiobtbridge"
-        minSdk 24
+        minSdk 28
         targetSdk 34
         versionCode 3
         versionName "1.0.3"
@@ -24,13 +24,20 @@ android {
             cmake {
                 cppFlags "-std=c++17"
                 arguments "-DANDROID_STL=c++_static",
-                          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,separate-code",
-                          "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,separate-code"
+                          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code",
+                          "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code"
             }
         }
     }
 
     buildTypes {
+        debug {
+            packaging {
+                jniLibs {
+                    useLegacyPackaging = false
+                }
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -54,9 +61,6 @@ android {
         jniLibs {
             useLegacyPackaging = false
         }
-        resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
-        }
     }
     externalNativeBuild {
         cmake {
@@ -70,14 +74,14 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.10.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.1'
     implementation 'androidx.activity:activity-compose:1.7.2'
+    implementation 'androidx.media:media:1.6.0'
     implementation platform('androidx.compose:compose-bom:2023.03.00')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.ui:ui-graphics'
     implementation 'androidx.compose.ui:ui-tooling-preview'
     implementation 'androidx.compose.material3:material3'
     
-    // Oboe
-    implementation 'com.google.oboe:oboe:1.9.0'
+    // Oboe will be built from source in CMake
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'

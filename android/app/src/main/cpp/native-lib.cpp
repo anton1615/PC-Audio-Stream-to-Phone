@@ -15,7 +15,7 @@ const int SAMPLE_RATE = 48000;
 const int CHANNELS = 2;
 const int MAX_FRAME_SIZE = 960; 
 
-class AudioEngine : public oboe::AudioStreamDataCallback {
+class AudioEngine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
     AudioEngine() {
         int error;
@@ -33,30 +33,37 @@ public:
     }
 
     void start() {
-        std::lock_guard<std::mutex> lock(mBufferMutex);
+        std::lock_guard<std::mutex> lock(mStreamMutex);
         if (mStream) return;
 
         // 清空舊緩衝區，防止重啟後聽到舊聲音
-        mJitterBuffer.clear();
-        mDecodedPcmBuffer.clear();
-        mIsBuffering = true;
+        {
+            std::lock_guard<std::mutex> bufferLock(mBufferMutex);
+            mJitterBuffer.clear();
+            mDecodedPcmBuffer.clear();
+            mIsBuffering = true;
+        }
 
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
-               ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-               ->setSharingMode(oboe::SharingMode::Exclusive)
+               ->setPerformanceMode(oboe::PerformanceMode::LowLatency) 
+               ->setSharingMode(oboe::SharingMode::Shared)      
                ->setFormat(oboe::AudioFormat::Float)
                ->setChannelCount(CHANNELS)
                ->setSampleRate(SAMPLE_RATE)
                ->setUsage(oboe::Usage::Media)
                ->setContentType(oboe::ContentType::Music)
-               ->setDataCallback(this);
+               ->setDataCallback(this)
+               ->setErrorCallback(this); // 監聽設備切換錯誤
 
         oboe::Result result = builder.openStream(mStream);
         if (result != oboe::Result::OK) {
             LOGE("Failed to open stream: %s", oboe::convertToText(result));
             return;
         }
+
+        // 設置 Oboe 內部緩衝區大小為 3 個 Burst，增加對高位元率背景抖動的容忍度
+        mStream->setBufferSizeInFrames(mStream->getFramesPerBurst() * 3);
 
         result = mStream->requestStart();
         if (result != oboe::Result::OK) {
@@ -66,7 +73,16 @@ public:
         }
     }
 
+    // 當藍牙連線或中斷導致設備失效時，自動重啟
+    void onErrorAfterClose(oboe::AudioStream *stream, oboe::Result error) override {
+        if (error == oboe::Result::ErrorDisconnected) {
+            LOGI("Audio device disconnected, restarting stream...");
+            start();
+        }
+    }
+
     void stop() {
+        std::lock_guard<std::mutex> lock(mStreamMutex);
         if (mStream) {
             mStream->stop();
             mStream->close();
@@ -77,11 +93,14 @@ public:
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *audioStream, void *audioData, int32_t numFrames) override {
         float *output = static_cast<float *>(audioData);
         int32_t totalSamplesNeeded = numFrames * CHANNELS;
-        memset(output, 0, totalSamplesNeeded * sizeof(float));
-
-        std::lock_guard<std::mutex> lock(mBufferMutex);
         
-        int threshold = std::max(2, mTargetBufferSize);
+        // 優先初始化輸出為 0
+        for (int i = 0; i < totalSamplesNeeded; ++i) output[i] = 0.0f;
+
+        std::unique_lock<std::mutex> lock(mBufferMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return oboe::DataCallbackResult::Continue; // 如果拿不到鎖，直接跳過這幀，避免爆音
+        
+        int threshold = std::max(1, mTargetBufferSize);
         if (mIsBuffering) {
             if (mJitterBuffer.size() >= (size_t)threshold) {
                 mIsBuffering = false;
@@ -153,6 +172,7 @@ public:
 
 private:
     std::shared_ptr<oboe::AudioStream> mStream;
+    std::mutex mStreamMutex;
     std::map<uint64_t, std::vector<uint8_t>> mJitterBuffer;
     std::vector<float> mDecodedPcmBuffer;
     std::mutex mBufferMutex;

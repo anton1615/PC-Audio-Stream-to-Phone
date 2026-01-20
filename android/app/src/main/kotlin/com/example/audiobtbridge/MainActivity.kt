@@ -16,6 +16,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.example.audiobtbridge.latency.LatencyMode
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,7 +82,12 @@ fun MainScreen(context: Context) {
 
         Text("Preset Selection:", style = MaterialTheme.typography.titleMedium)
         
-        val radioOptions = listOf(LatencyMode.HIGH_QUALITY, LatencyMode.BALANCED, LatencyMode.LOW_LATENCY)
+        val radioOptions = listOf(
+            LatencyMode.LOW_LATENCY, 
+            LatencyMode.BALANCE, 
+            LatencyMode.HIGH_QUALITY,
+            LatencyMode.BEST_QUALITY
+        )
         Column(Modifier.selectableGroup()) {
             radioOptions.forEach { mode ->
                 Row(

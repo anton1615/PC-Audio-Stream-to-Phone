@@ -2,8 +2,9 @@ package com.example.audiobtbridge.latency
 
 enum class LatencyMode {
     LOW_LATENCY,
-    BALANCED,
-    HIGH_QUALITY
+    BALANCE,
+    HIGH_QUALITY,
+    BEST_QUALITY
 }
 
 data class AudioConfig(
@@ -16,20 +17,27 @@ class LatencyManager {
     fun getConfigForMode(mode: LatencyMode): AudioConfig {
         return when (mode) {
             LatencyMode.LOW_LATENCY -> AudioConfig(
-                bufferSize = 2,
-                bitrate = 64000,
-                complexity = 0
-            )
-            LatencyMode.BALANCED -> AudioConfig(
-                bufferSize = 10, // 從 6 提升到 10，增加背景穩定性
+                bufferSize = 2,      // ~20ms (1 pkt) - 極限低延遲
                 bitrate = 128000,
                 complexity = 5
             )
+            LatencyMode.BALANCE -> AudioConfig(
+                bufferSize = 3,      // ~60ms (3 pkts) - 平衡
+                bitrate = 19600,
+                complexity = 8
+            )
             LatencyMode.HIGH_QUALITY -> AudioConfig(
-                bufferSize = 20, // 改回原來的 20
-                bitrate = 320000,
+                bufferSize = 7,      // ~140ms (7 pkts) - 高品質
+                bitrate = 256000,
+                complexity = 10
+            )
+            LatencyMode.BEST_QUALITY -> AudioConfig(
+                bufferSize = 13,     // ~260ms (13 pkts) - 最穩定
+                bitrate = 320000,    // Opus 透明音質上限
                 complexity = 10
             )
         }
     }
 }
+
+
