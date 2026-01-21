@@ -150,6 +150,8 @@ impl AudioCapturer {
                 // 嘗試重啟，如果失敗則繼續下一次嘗試
                 if let Err(e) = self.reinitialize() {
                     eprintln!("Failed to reinitialize audio capturer: {}", e);
+                    // 返回一個特殊的錯誤字串，讓 main.rs 知道裝置變更但不要退出 Streaming 狀態
+                    return Err("DEVICE_CHANGE_RETRY".to_string());
                 }
             }
         }

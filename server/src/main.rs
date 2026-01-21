@@ -165,14 +165,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                            while let Ok(Some(mut pcm)) = capturer.read_samples() {
-                                pcm_buffer.append(&mut pcm);
-                                while pcm_buffer.len() >= 1920 {
-                                    let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
-                                    let data = encode_frame(&mut encoder, &frame);
-                                    if !data.is_empty() { let _ = udp_sender.send_audio_with_seq(sequence, data).await; sequence += 1; }
+                            let mut read_error = false;
+                            while let Ok(res) = capturer.read_samples() {
+                                if let Some(mut pcm) = res {
+                                    pcm_buffer.append(&mut pcm);
+                                    while pcm_buffer.len() >= 1920 {
+                                        let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
+                                        let data = encode_frame(&mut encoder, &frame);
+                                        if !data.is_empty() { let _ = udp_sender.send_audio_with_seq(sequence, data).await; sequence += 1; }
+                                    }
+                                } else {
+                                    break;
                                 }
                             }
+                            
+                            // 檢查 read_samples 是否返回了錯誤（如 channel 斷開）
+                            // 注意：我們現在在 read_samples 內部處理重啟，所以除非真的斷開，否則不應 break
+                            if let Err(e) = capturer.read_samples() {
+                                if e == "DEVICE_CHANGE_RETRY" {
+                                    // 只是裝置切換重試中，忽略並繼續
+                                } else {
+                                    eprintln!("Audio capture fatal error: {}", e);
+                                    read_error = true;
+                                }
+                            }
+                            
+                            if read_error { break; }
+
                             if sequence > 0 && sequence % 500 == 0 {
                                 let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
                                     packets: sequence,
