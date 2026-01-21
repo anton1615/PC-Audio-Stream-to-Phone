@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut encoder = match create_encoder() { Ok(e) => e, Err(_) => continue };
 
                 let mut current_bitrate = 128000;
-                let mut current_complexity = 5;
+                let current_complexity = 5;
                 let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
 
                 let mut pcm_buffer = Vec::with_capacity(1920 * 10);
@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Ok((len, _addr)) = result {
                                 if len >= 6 && buf[0] == 0x02 {
                                     let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
-                                    let complexity = buf[5] as i32;
+                                    let mut complexity = buf[5] as i32;
 
                                     if bitrate < 16000 { bitrate = 16000; }
                                     if bitrate > 512000 { bitrate = 512000; }
