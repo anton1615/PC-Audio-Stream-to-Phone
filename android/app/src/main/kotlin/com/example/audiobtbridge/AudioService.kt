@@ -82,11 +82,23 @@ class AudioService : Service() {
         nm.notify(1, notification)
     }
 
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (BluetoothDevice.ACTION_ACL_DISCONNECTED == intent?.action) {
+                log("Bluetooth Disconnected. Stopping Service...")
+                stopSelf()
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         serviceInstance = this
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
+        
+        // Register Bluetooth monitor
+        registerReceiver(bluetoothReceiver, IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED))
         
         // Listen for audio device changes
 

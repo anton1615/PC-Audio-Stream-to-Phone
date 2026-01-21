@@ -25,18 +25,16 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
-    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **Debug Console**.
+    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **Foreground Service Notification**.
 *   **Ultra-Low Latency (Pulse Architecture)**: 
     *   **UDP Port Unification**: Uses a single port (12345) for all traffic to maximize firewall penetration.
     *   **Jitter Buffer Catch-up**: Automatically drops old packets to maintain a strict latency target.
-*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **Forced Resampling** (rubato) on the server.
+    *   **Double-Send Redundancy**: Server can send packets twice to mitigate Wi-Fi interference.
+*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **PLC (Packet Loss Concealment)** support.
 *   **Anti-Clipping**: 10ms linear Fade-out/Fade-in on all transitions (Start/Stop/Device Change).
-*   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden.
-*   **Background Ready**: Uses **MediaSession** on Android to prevent system throttling.
-*   **Stability First**: 
-    *   **Config Watchdog**: Android client automatically resyncs configuration if audio drops.
-    *   **Sequence Realignment**: Automatically recovers from network jumps without mechanical noise.
-*   **Auto-Discovery**: Fast UDP-based server detection.
+*   **CPU Efficient**: Optimized Windows server; stops UI updates when hidden to consume < 0.1% CPU.
+*   **Background Stable**: Uses **Foreground Service** on Android to prevent system throttling, with a persistent notification.
+*   **Smart Disconnect**: Server automatically returns to Listening state if the connection is lost for 5 seconds.
 
 ## Supported Platforms
 
@@ -80,7 +78,7 @@ The server communicates over **UDP Port 12345**.
 ### 2. Connect Client
 1.  Open the Android app.
 2.  Click **CONNECT**. It will broadcast a discovery signal and link with the server instantly.
-3.  **Debug Mode**: Toggle the wrench icon to see the real-time connection log.
+3.  **Background Streaming**: You can now safely switch to other apps or turn off your screen. The connection will remain active until you click STOP or swipe away the app.
 
 ### 3. Adjust Presets
 Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALITY** depending on your Wi-Fi stability.
