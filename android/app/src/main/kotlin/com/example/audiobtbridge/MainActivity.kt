@@ -75,15 +75,10 @@ fun MainScreen(context: Context) {
     val history by AudioService.latencyHistoryFlow.collectAsState()
     val currentMode by AudioService.latencyModeFlow.collectAsState()
     val isSearching by AudioService.isSearchingFlow.collectAsState()
-    val debugLogs by AudioService.debugLogsFlow.collectAsState()
-    var showDebug by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("PC Audio Stream to Phone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
-            IconButton(onClick = { showDebug = !showDebug }) {
-                Text(if (showDebug) "🛠️" else "⚙️")
-            }
         }
         
         if (isSearching && serviceState) {
@@ -137,22 +132,6 @@ fun MainScreen(context: Context) {
         }
 
         Spacer(modifier = Modifier.weight(1f))
-
-        // Debug Console
-        AnimatedVisibility(visible = showDebug) {
-            Card(
-                modifier = Modifier.fillMaxWidth().height(150.dp).padding(bottom = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.Black),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                androidx.compose.foundation.rememberScrollState()
-                val scrollState = androidx.compose.foundation.rememberScrollState()
-                LaunchedEffect(debugLogs) { scrollState.animateScrollTo(scrollState.maxValue) }
-                Column(modifier = Modifier.padding(8.dp).verticalScroll(scrollState)) {
-                    Text(debugLogs, color = Color.Green, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                }
-            }
-        }
 
         Button(
             onClick = {

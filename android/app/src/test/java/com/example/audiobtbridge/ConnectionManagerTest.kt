@@ -23,4 +23,13 @@ class ConnectionManagerTest {
         
         assertFalse(manager.shouldSendHello(currentTime, lastPacketTime))
     }
+
+    @Test
+    fun `should detect duplicate sequence number`() {
+        val manager = ConnectionManager()
+        
+        assertFalse(manager.isDuplicate(100L)) // First time: not a duplicate
+        assertTrue(manager.isDuplicate(100L))  // Second time: duplicate
+        assertFalse(manager.isDuplicate(101L)) // New sequence: not a duplicate
+    }
 }

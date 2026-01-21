@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, ShowWindow, SW_HIDE, SW_SHOW, SW_RESTORE, SetForegroundWindow, IsWindowVisible,
     PostQuitMessage
 };
-use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_FRAME};
+use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
 use windows::Win32::Foundation::HWND;
 use windows::core::{w};
 use crossbeam_channel::{unbounded};
@@ -39,6 +39,8 @@ use crate::ui::{UiMessage, UiCommand, UiState, AppWindow};
 struct Args {
     #[arg(short, long, default_value_t = false)]
     debug: bool,
+    #[arg(long, default_value_t = 0.0)]
+    drop_rate: f32,
 }
 
 #[derive(PartialEq, Debug)]
@@ -57,18 +59,23 @@ fn load_embedded_icon() -> Icon {
 }
 
 fn force_window_redraw(hwnd: HWND, ui_weak: &slint::Weak<AppWindow>) {
-    unsafe {
-        ShowWindow(hwnd, SW_SHOW); ShowWindow(hwnd, SW_RESTORE); SetForegroundWindow(hwnd);
-        let _ = RedrawWindow(hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME);
-        let _ = InvalidateRect(hwnd, None, true); let _ = UpdateWindow(hwnd);
-    }
     let ui_weak_clone = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_weak_clone.upgrade() {
-            ui.set_refresh_counter(ui.get_refresh_counter() + 1);
+            ui.show().unwrap();
             ui.window().request_redraw();
+            ui.set_refresh_counter(ui.get_refresh_counter() + 1);
         }
     });
+    unsafe {
+        if !hwnd.0.is_null() {
+            ShowWindow(hwnd, SW_SHOW);
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+            let _ = InvalidateRect(hwnd, None, true);
+            let _ = UpdateWindow(hwnd);
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -94,7 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui_stats_tx_server = ui_stats_tx.clone();
     let is_running_server = is_running.clone();
+    let is_ui_visible_server = is_ui_visible.clone();
     let debug_mode = args.debug;
+    let drop_rate = args.drop_rate;
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -164,31 +173,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         
                         if state == ServerState::Streaming && target_addr.is_some() {
                             let target = target_addr.unwrap();
-                            let mut udp_sender = UdpSender::new(socket.clone(), target, debug_mode);
+                            let mut udp_sender = UdpSender::new(socket.clone(), target, debug_mode, redundancy, drop_rate);
                             let mut capturer = AudioCapturer::new(debug_mode).expect("Err");
                             let mut encoder = create_encoder().expect("Err");
                             let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
                             let mut pcm_buffer = Vec::with_capacity(1920 * 10);
                             let mut sequence = 0u64;
                             let start_time = std::time::Instant::now();
-                            let mut last_redundancy_log = std::time::Instant::now();
+                            let mut last_activity_time = std::time::Instant::now();
+                            let mut last_ui_update_time = std::time::Instant::now();
 
                             loop {
-                                if debug_mode && redundancy && last_redundancy_log.elapsed().as_secs() >= 2 {
-                                    println!("{} Redundancy is ON (Double-sending packets)", "[DEBUG]".magenta());
-                                    last_redundancy_log = std::time::Instant::now();
-                                }
                                 tokio::select! {
                                     cmd_msg = cmd_rx.recv() => {
                                         match cmd_msg {
                                             Some(UiCommand::ToggleServer) => { state = ServerState::Stopping; break; }
-                                            Some(UiCommand::SetRedundancy(r)) => redundancy = r,
+                                            Some(UiCommand::SetRedundancy(r)) => {
+                                                redundancy = r;
+                                                udp_sender.redundancy_enabled = r;
+                                            }
                                             _ => {}
                                         }
                                     }
                                     result = socket.recv_from(&mut buf) => {
                                         if let Ok((len, _)) = result {
-                                            if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
+                                            last_activity_time = std::time::Instant::now();
+                                            if len >= 10 && &buf[0..10] == b"AS2P_ALIVE" {
+                                                // Heartbeat received, activity time updated above
+                                                continue;
+                                            } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
                                                 let new_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
                                                 let new_complexity = buf[15] as i32;
 
@@ -224,11 +237,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                     _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
-                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                                            packets: sequence, 
-                                            bitrate: current_bitrate, 
-                                            client_ip: Some(target.to_string()) 
-                                        });
+                                        if last_activity_time.elapsed().as_secs() > 5 {
+                                            if debug_mode { println!("{} Client connection timed out.", "[CONN]".red()); }
+                                            state = ServerState::Listening; 
+                                            let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
+                                            break; 
+                                        }
+                                        
+                                        if last_ui_update_time.elapsed().as_millis() >= 200 {
+                                            if is_ui_visible_server.load(Ordering::SeqCst) {
+                                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                                                    packets: sequence, 
+                                                    bitrate: current_bitrate, 
+                                                    client_ip: Some(target.to_string()) 
+                                                });
+                                            }
+                                            last_ui_update_time = std::time::Instant::now();
+                                        }
 
                                         for _ in 0..10 {
                                             match capturer.next_event() {
@@ -241,9 +266,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         if !data.is_empty() {
                                                             let ts = start_time.elapsed().as_millis() as u64;
                                                             let _ = udp_sender.send_audio_v8(sequence, ts, data).await;
-                                                            if redundancy {
-                                                                // Redundancy handled manually or via UdpSender
-                                                            }
                                                             sequence += 1;
                                                         }
                                                     }

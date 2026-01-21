@@ -39,6 +39,7 @@ public:
         mIsBuffering = true;
         mFirstPacket = true;
         mExpectedSeq = 0;
+        mPlcCount = 0;
         if (mOpusDecoder) opus_decoder_ctl(mOpusDecoder, OPUS_RESET_STATE);
         LOGI(">>> BUFFER CLEARED <<<");
     }
@@ -115,6 +116,7 @@ public:
                 if (decoded > 0) {
                     mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
                     mExpectedSeq++;
+                    mPlcCount++;
                 }
                 continue;
             } else if (currentSeq < mExpectedSeq) {
@@ -161,6 +163,7 @@ public:
     }
 
     int getBufferDepth() { std::lock_guard<std::mutex> lock(mBufferMutex); return (int)mJitterBuffer.size(); }
+    int getPLCCount() { return mPlcCount.exchange(0); }
 
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
@@ -179,6 +182,7 @@ private:
     int mTargetBufferSize = 5;
     uint64_t mExpectedSeq = 0;
     bool mFirstPacket = true;
+    std::atomic<int> mPlcCount{0};
 };
 
 static AudioEngine gAudioEngine;
@@ -189,6 +193,7 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_stopNative(JN
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_resetAudio(JNIEnv *env, jobject thiz) { gAudioEngine.resetInternal(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setBufferSize(JNIEnv *env, jobject thiz, jint size) { gAudioEngine.setBufferSize(size); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) { return gAudioEngine.getBufferDepth(); }
+JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) { return gAudioEngine.getPLCCount(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_writeToNativeBuffer(JNIEnv *env, jobject thiz, jbyteArray data, jint length) {
     // V8 Protocol: AS2P_AUDIO(10) + SEQ(8) + TS(8) + PAYLOAD
     // Kotlin layer strips the prefix (26 bytes) and just sends SEQ(8) + TS(8) + PAYLOAD... wait.
