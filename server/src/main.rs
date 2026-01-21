@@ -11,11 +11,13 @@ use tray_icon::{
 use socket2::{Socket, Domain, Type, Protocol, SockAddr};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, TranslateMessage, DispatchMessageW, MSG,
-    FindWindowW, ShowWindow, SW_HIDE, SW_SHOW, SW_RESTORE, SetForegroundWindow, IsWindowVisible
+    FindWindowW, ShowWindow, SW_HIDE, SW_SHOW, SW_RESTORE, SetForegroundWindow, IsWindowVisible,
+    SendMessageW, WM_SETICON, ICON_SMALL, ICON_BIG, LoadIconW, IDI_APPLICATION
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
 use windows::Win32::Foundation::HWND;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use crossbeam_channel::{unbounded};
 use slint::ComponentHandle;
 use image::ImageReader;
@@ -145,7 +147,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     if let Ok(_) = configure_encoder(&mut encoder, bitrate, complexity) {
                                         current_bitrate = bitrate;
-                                        current_complexity = complexity;
                                         let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
                                             packets: sequence,
                                             bitrate: current_bitrate,
@@ -240,6 +241,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let hwnd = FindWindowW(None, w!("AS2P_SERVER_UI")).unwrap_or(HWND(std::ptr::null_mut()));
             let visible = !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool();
             is_ui_visible.store(visible, Ordering::SeqCst);
+
+            // Force set icon if window is found
+            if !hwnd.0.is_null() {
+                unsafe {
+                    let h_instance = GetModuleHandleW(None).unwrap();
+                    // Load the icon from the executable resources (ID 1 is default for winres)
+                    let h_icon = LoadIconW(h_instance, PCWSTR(1 as *const u16)).unwrap_or_else(|_| {
+                        LoadIconW(None, IDI_APPLICATION).unwrap()
+                    });
+                    SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_SMALL as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
+                    SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_BIG as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
+                }
+            }
 
             let redundancy = redundancy_enabled.load(Ordering::SeqCst);
 

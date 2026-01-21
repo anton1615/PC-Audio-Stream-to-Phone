@@ -17,13 +17,16 @@ slint::slint! {
         in property <string> client_text: "None";
         in property <int> refresh_counter: 0;
         in-out property <bool> redundancy_enabled: true;
+        in-out property <bool> startup_enabled: false;
 
         callback toggle_server();
         callback toggle_redundancy(bool);
+        callback toggle_startup(bool);
 
         title: "AS2P_SERVER_UI";
+        icon: @image-url("as2p.png");
         width: 400px;
-        height: 450px;
+        height: 500px;
         background: #1e1e1e;
 
         Rectangle {
@@ -39,14 +42,14 @@ slint::slint! {
                 // Logo
                 Image {
                     source: @image-url("as2p.png");
-                    width: 120px;
-                    height: 120px;
+                    width: 100px;
+                    height: 100px;
                     horizontal-alignment: center;
                 }
                 
                 Text { 
                     text: "AS2P Server"; 
-                    font-size: 28px; 
+                    font-size: 24px; 
                     font-weight: 800;
                     color: white; 
                     horizontal-alignment: center; 
@@ -85,7 +88,7 @@ slint::slint! {
 
                 // Configuration / Info
                 VerticalLayout {
-                    spacing: 10px;
+                    spacing: 12px;
                     alignment: center;
                     
                     HorizontalLayout {
@@ -93,8 +96,8 @@ slint::slint! {
                         spacing: 10px;
                         Text { text: "Double Send Redundancy:"; color: #cccccc; font-size: 14px; vertical-alignment: center; }
                         Rectangle {
-                            width: 24px;
-                            height: 24px;
+                            width: 20px;
+                            height: 20px;
                             background: root.redundancy_enabled ? #00ff00 : #444444;
                             border-radius: 4px;
                             TouchArea {
@@ -103,7 +106,26 @@ slint::slint! {
                                     root.toggle_redundancy(root.redundancy_enabled);
                                 }
                             }
-                            Text { text: root.redundancy_enabled ? "✔" : ""; color: black; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { text: root.redundancy_enabled ? "✔" : ""; color: black; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        Text { text: "Run at Startup:"; color: #cccccc; font-size: 14px; vertical-alignment: center; }
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            background: root.startup_enabled ? #00ff00 : #444444;
+                            border-radius: 4px;
+                            TouchArea {
+                                clicked => { 
+                                    root.startup_enabled = !root.startup_enabled;
+                                    root.toggle_startup(root.startup_enabled);
+                                }
+                            }
+                            Text { text: root.startup_enabled ? "✔" : ""; color: black; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
 
@@ -140,11 +162,46 @@ pub struct UiState {
     pub main_thread_id: u32,
 }
 
+fn check_startup_status() -> bool {
+    if let Some(mut path) = dirs::config_dir() {
+        path.push("Microsoft");
+        path.push("Windows");
+        path.push("Start Menu");
+        path.push("Programs");
+        path.push("Startup");
+        path.push("AS2P.lnk");
+        return path.exists();
+    }
+    false
+}
+
+fn set_startup(enabled: bool) {
+    if let Some(mut path) = dirs::config_dir() {
+        path.push("Microsoft");
+        path.push("Windows");
+        path.push("Start Menu");
+        path.push("Programs");
+        path.push("Startup");
+        path.push("AS2P.lnk");
+
+        if enabled {
+            if let Ok(exe_path) = std::env::current_exe() {
+                let lnk = mslnk::ShellLink::new(&exe_path).unwrap();
+                let _ = lnk.create_lnk(&path);
+            }
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<AppWindow>>) {
     unsafe { std::env::set_var("SLINT_BACKEND", "software"); }
     let window = AppWindow::new().expect("Failed to create Slint window");
     
     let _ = handle_tx.send(window.as_weak());
+
+    window.set_startup_enabled(check_startup_status());
 
     let is_visible_on_close = state.is_ui_visible.clone();
     let main_tid = state.main_thread_id;
@@ -164,6 +221,19 @@ pub fn run_ui(state: UiState, handle_tx: crossbeam_channel::Sender<slint::Weak<A
 
     let cmd_tx_redundancy = state.cmd_tx.clone();
     window.on_toggle_redundancy(move |enabled| { let _ = cmd_tx_redundancy.try_send(UiCommand::SetRedundancy(enabled)); });
+
+    let window_weak_startup = window.as_weak();
+    window.on_toggle_startup(move |enabled| { 
+        set_startup(enabled);
+        let ui_handle = window_weak_startup.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                let old = ui.get_refresh_counter();
+                ui.set_refresh_counter(old + 1);
+                ui.window().request_redraw();
+            }
+        });
+    });
 
     let window_weak = window.as_weak();
     let is_running_timer = state.is_running.clone();
