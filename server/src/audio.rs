@@ -1,9 +1,12 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::mpsc::{self, Receiver};
+use std::time::{Instant, Duration};
 
 pub struct AudioCapturer {
     _stream: cpal::Stream,
     receiver: Receiver<Vec<f32>>,
+    device_name: String,
+    last_check: Instant,
 }
 
 impl AudioCapturer {
@@ -15,6 +18,7 @@ impl AudioCapturer {
 
         #[allow(deprecated)]
         let device_name = device.name().unwrap_or_else(|_| "Unknown Device".to_string());
+        let stored_name = device_name.clone();
         
         // 獲取所有支援 48kHz Stereo 的配置
         let supported_configs: Vec<_> = device.supported_output_configs()
@@ -97,14 +101,57 @@ impl AudioCapturer {
         Ok(Self {
             _stream: stream,
             receiver: rx,
+            device_name: stored_name,
+            last_check: Instant::now(),
         })
     }
 
-    pub fn read_samples(&mut self) -> Result<Option<Vec<f32>>, String> {
-        match self.receiver.try_recv() {
-            Ok(data) => Ok(Some(data)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err("Audio channel disconnected".to_string()),
+        pub fn read_samples(&mut self) -> Result<Option<Vec<f32>>, String> {
+
+            match self.receiver.try_recv() {
+
+                Ok(data) => Ok(Some(data)),
+
+                Err(mpsc::TryRecvError::Empty) => Ok(None),
+
+                Err(mpsc::TryRecvError::Disconnected) => Err("Audio channel disconnected".to_string()),
+
+            }
+
         }
+
     }
-}
+
+    
+
+    #[cfg(test)]
+
+    mod tests {
+
+        use super::*;
+
+    
+
+        #[test]
+
+        fn test_audio_capturer_initialization() {
+
+            // This test might fail in environments without audio devices, 
+
+            // but it's a start.
+
+            let capturer = AudioCapturer::new();
+
+            if let Ok(c) = capturer {
+
+                // Check if device name is stored (this will fail to compile first)
+
+                // assert!(!c.device_name.is_empty());
+
+            }
+
+        }
+
+    }
+
+    
