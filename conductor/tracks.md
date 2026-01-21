@@ -43,6 +43,7 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [~] **Track: 做UI更新，第一是檔案總管裡server.exe的圖示幫我把 @as2p.ico 合進去，然後server端UI算夠modern，不過幫我把sent packet的顯示刪掉，android端的GUI弄得現代一點，packet received、last sequence、handshake count都幫我刪掉，留buffer latency，APP畫面的標題名字也沒改到，反正整個畫面UI重新設計，現在的功能要保留，其他交給你，這次改動盡量不要動到功能性的部分**
+- [x] **Track: 做UI更新，第一是檔案總管裡server.exe的圖示幫我把 @as2p.ico 合進去，然後server端UI算夠modern，不過幫我把sent packet的顯示刪掉，android端的GUI弄得現代一點，packet received、last sequence、handshake count都幫我刪掉，留buffer latency，APP畫面的標題名字也沒改到，反正整個畫面UI重新設計，現在的功能要保留，其他交給你，這次改動盡量不要動到功能性的部分**
 *Link: [./tracks/ui_modernization_20260121/](./tracks/ui_modernization_20260121/)*
+*Completed on: 2026-01-21*
 
