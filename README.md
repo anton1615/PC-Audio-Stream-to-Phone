@@ -23,6 +23,9 @@ There are several audio streaming solutions available on the market (e.g., Audio
 
 ## Key Features
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
+*   **Modern Visual Interface**: 
+    *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
+    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** for real-time monitoring.
 *   **Ultra-Low Latency**: Utilizes **Oboe (C++)** on Android for AAudio support and **WASAPI** on Windows.
 *   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo for studio-quality streaming.
 *   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden.
@@ -81,8 +84,8 @@ Download the latest versions (v1.0.3) from the [Releases](https://github.com/ant
 *   `app-debug.apk` (Android)
 
 ### 2. Setup
-1.  **Launch Server**: Run `server.exe` on your PC. Allow it through the Windows Firewall if prompted. Click **Start Server**.
-2.  **Connect Client**: Open the app on your Android phone. It should automatically detect your PC via the mDNS broadcast.  
+1.  **Launch Server**: Run `server.exe` on your PC. Allow it through the Windows Firewall if prompted. Click **START STREAMING**.
+2.  **Connect Client**: Open the app on your Android phone. Click **START STREAMING**. It should automatically detect your PC via the mDNS broadcast.  
 3.  **Go Background**: 
     *   **PC**: You can safely close the server window. It will minimize to the System Tray.
     *   **Android**: You can switch to other apps or lock your screen. The audio will continue.
