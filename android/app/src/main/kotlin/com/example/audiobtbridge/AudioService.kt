@@ -64,6 +64,9 @@ class AudioService : Service() {
         private val _latencyFlow = MutableStateFlow(0.0f)
         val latencyFlow = _latencyFlow.asStateFlow()
 
+        private val _latencyHistoryFlow = MutableStateFlow<List<Float>>(emptyList())
+        val latencyHistoryFlow = _latencyHistoryFlow.asStateFlow()
+
         const val CHANNEL_ID = "AudioServiceChannel"
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "STOP_SERVICE"
@@ -182,7 +185,7 @@ class AudioService : Service() {
         createNotificationChannel()
         
         // Setup MediaSession for background priority
-        mediaSession = MediaSessionCompat(this, "AudioBTBridge").apply {
+        mediaSession = MediaSessionCompat(this, "AS2P").apply {
             setPlaybackState(PlaybackStateCompat.Builder()
                 .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
                 .build())
@@ -193,8 +196,8 @@ class AudioService : Service() {
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("PC Audio Steam to Phone")
-            .setContentText("Receiving audio...")
+            .setContentTitle("AS2P")
+            .setContentText("Streaming PC Audio...")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
@@ -226,6 +229,15 @@ class AudioService : Service() {
                 
                 _lastSequenceFlow.value = seq
                 _latencyFlow.value = latencyMs
+
+                // Update history
+                val currentHistory = _latencyHistoryFlow.value.toMutableList()
+                currentHistory.add(latencyMs)
+                if (currentHistory.size > 60) { // Keep last 60 points
+                    currentHistory.removeAt(0)
+                }
+                _latencyHistoryFlow.value = currentHistory
+
                 delay(100) // 每 100ms 更新一次 UI
             }
         }
