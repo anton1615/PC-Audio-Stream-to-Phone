@@ -43,10 +43,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(context: Context) {
     val serviceState by AudioService.serviceState.collectAsState()
-    val packetCount by AudioService.packetCountFlow.collectAsState()
-    val lastSequence by AudioService.lastSequenceFlow.collectAsState()
     val latency by AudioService.latencyFlow.collectAsState()
-    val handshakeCount by AudioService.clientHelloCount.collectAsState()
     val currentMode by AudioService.latencyModeFlow.collectAsState()
 
     val prefs = context.getSharedPreferences("prefs", Context.MODE_PRIVATE)
@@ -59,7 +56,7 @@ fun MainScreen(context: Context) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "AudioBT-Bridge",
+            text = "AS2P",
             style = MaterialTheme.typography.headlineMedium
         )
 
@@ -71,10 +68,7 @@ fun MainScreen(context: Context) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("Status: ${if (serviceState) "Connected" else "Disconnected"}")
-                Text("Packets Received: $packetCount")
-                Text("Last Sequence: $lastSequence")
                 Text("Buffer Latency: %.1f ms".format(latency))
-                Text("Handshake Count: $handshakeCount")
             }
         }
 
