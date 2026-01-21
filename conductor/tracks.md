@@ -41,6 +41,7 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [~] **Track: 修一個之前就修過的bug，在建立連線後server端如果切換音訊裝置的話看起來沒有斷線但會沒有聲音傳到手機端**
+- [x] **Track: 修一個之前就修過的bug，在建立連線後server端如果切換音訊裝置的話看起來沒有斷線但會沒有聲音傳到手機端**
 *Link: [./tracks/fix_audio_device_switching_20260121/](./tracks/fix_audio_device_switching_20260121/)*
+*Completed on: 2026-01-21*
 
