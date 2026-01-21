@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Ok((len, _addr)) = result {
                                 if len >= 6 && buf[0] == 0x02 {
                                     let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
-                                    let mut complexity = buf[5] as i32;
+                                    let complexity = buf[5] as i32;
 
                                     if bitrate < 16000 { bitrate = 16000; }
                                     if bitrate > 512000 { bitrate = 512000; }
@@ -244,15 +244,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Force set icon if window is found
             if !hwnd.0.is_null() {
-                unsafe {
-                    let h_instance = GetModuleHandleW(None).unwrap();
-                    // Load the icon from the executable resources (ID 1 is default for winres)
-                    let h_icon = LoadIconW(h_instance, PCWSTR(1 as *const u16)).unwrap_or_else(|_| {
-                        LoadIconW(None, IDI_APPLICATION).unwrap()
-                    });
-                    SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_SMALL as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
-                    SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_BIG as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
-                }
+                let h_instance = GetModuleHandleW(None).unwrap();
+                // Load the icon from the executable resources (ID 1 is default for winres)
+                let h_icon = LoadIconW(h_instance, PCWSTR(1 as *const u16)).unwrap_or_else(|_| {
+                    LoadIconW(None, IDI_APPLICATION).unwrap()
+                });
+                SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_SMALL as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
+                SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_BIG as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
             }
 
             let redundancy = redundancy_enabled.load(Ordering::SeqCst);

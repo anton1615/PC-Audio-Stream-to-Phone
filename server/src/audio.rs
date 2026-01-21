@@ -183,8 +183,8 @@ mod tests {
     #[test]
     fn test_audio_capturer_initialization() {
         let capturer = AudioCapturer::new();
-        if let Ok(c) = capturer {
-            assert!(!c.device_name.is_empty());
+        if let Ok(_c) = capturer {
+            assert!(!_c.device_name.is_empty());
         }
     }
 }
