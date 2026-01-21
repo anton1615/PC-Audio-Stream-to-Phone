@@ -1,4 +1,4 @@
-ï»¿# Project Tracks
+# Project Tracks
 
 This file tracks all major tracks for the project. Each track has its own detailed plan in its respective folder.
 
@@ -34,14 +34,13 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [x] **Track: å¯¦ä½œ PLC (å°åŒ…éºå¤±éš±è—)å’Œã€Œé›™å€ç™¼é€ã€å†—é¤˜æ©Ÿåˆ¶**
+- [x] **Track: ¹ê§@ PLC («Ê¥]¿ò¥¢ÁôÂÃ)©M¡uÂù­¿µo°e¡v¤¾¾l¾÷¨î**
 *Link: [./tracks/audio_stability_plc_20260120/]
 *Completed on: 2026-01-20*(./tracks/audio_stability_plc_20260120/)*
 
 
 ---
 
-- [x] **Track: ä¿®ä¸€å€‹ä¹‹å‰å°±ä¿®éçš„bugï¼Œåœ¨å»ºç«‹é€£ç·šå¾Œserverç«¯å¦‚æœåˆ‡æ›éŸ³è¨Šè£ç½®çš„è©±çœ‹èµ·ä¾†æ²’æœ‰æ–·ç·šä½†æœƒæ²’æœ‰è²éŸ³å‚³åˆ°æ‰‹æ©Ÿç«¯**
-*Link: [./tracks/fix_audio_device_switching_20260121/](./tracks/fix_audio_device_switching_20260121/)*
+- [x] **Track: ­×¤@­Ó¤§«e´N­×¹Lªºbug¡A¦b«Ø¥ß³s½u«áserverºİ¦pªG¤Á´«­µ°T¸Ë¸mªº¸Ü¬İ°_¨Ó¨S¦³Â_½u¦ı·|¨S¦³Án­µ¶Ç¨ì¤â¾÷ºİ**
 *Completed on: 2026-01-21*
 

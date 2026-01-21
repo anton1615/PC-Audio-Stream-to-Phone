@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
 use std::sync::{Arc};
 use tokio::net::UdpSocket;
@@ -12,324 +12,320 @@ use socket2::{Socket, Domain, Type, Protocol, SockAddr};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, TranslateMessage, DispatchMessageW, MSG,
     FindWindowW, ShowWindow, SW_HIDE, SW_SHOW, SW_RESTORE, SetForegroundWindow, IsWindowVisible,
-    SendMessageW, WM_SETICON, ICON_SMALL, ICON_BIG, LoadIconW, IDI_APPLICATION
+    PostQuitMessage
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
+use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_FRAME};
 use windows::Win32::Foundation::HWND;
-use windows::core::{w, PCWSTR};
+use windows::core::{w};
 use crossbeam_channel::{unbounded};
 use slint::ComponentHandle;
 use image::ImageReader;
 use std::io::Cursor;
+use clap::Parser;
+use colored::*;
 
 mod audio;
 mod encoder;
 mod network;
-mod discovery;
 mod ui;
 
-use crate::audio::AudioCapturer;
+use crate::audio::{AudioCapturer, CaptureEvent};
 use crate::encoder::{create_encoder, encode_frame, configure_encoder};
 use crate::network::UdpSender;
-use crate::discovery::DiscoveryServer;
 use crate::ui::{UiMessage, UiCommand, UiState, AppWindow};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = false)]
+    debug: bool,
+}
+
+#[derive(PartialEq, Debug)]
+enum ServerState {
+    Idle,
+    Listening,
+    Streaming,
+    Stopping,
+}
 
 fn load_embedded_icon() -> Icon {
     let icon_data = include_bytes!("../../as2p.png");
-    let img = ImageReader::new(Cursor::new(icon_data))
-        .with_guessed_format()
-        .expect("Failed to guess icon format")
-        .decode()
-        .expect("Failed to decode icon")
-        .into_rgba8();
+    let img = ImageReader::new(Cursor::new(icon_data)).with_guessed_format().expect("Err").decode().expect("Err").into_rgba8();
+    let width = img.width(); let height = img.height();
+    Icon::from_rgba(img.into_raw(), width, height).expect("Err")
+}
 
-    let (width, height) = img.dimensions();
-    let rgba = img.into_raw();
-    Icon::from_rgba(rgba, width, height).expect("Failed to create tray icon")
+fn force_window_redraw(hwnd: HWND, ui_weak: &slint::Weak<AppWindow>) {
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW); ShowWindow(hwnd, SW_RESTORE); SetForegroundWindow(hwnd);
+        let _ = RedrawWindow(hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME);
+        let _ = InvalidateRect(hwnd, None, true); let _ = UpdateWindow(hwnd);
+    }
+    let ui_weak_clone = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_clone.upgrade() {
+            ui.set_refresh_counter(ui.get_refresh_counter() + 1);
+            ui.window().request_redraw();
+        }
+    });
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    if args.debug {
+        println!("{}", ">>> AS2P V8 'PULSE' SERVER (DEBUG MODE) <<<".bold().bright_white().on_blue());
+    }
+
     let is_running = Arc::new(AtomicBool::new(false));
-    let redundancy_enabled = Arc::new(AtomicBool::new(true));
     let (ui_stats_tx, ui_stats_rx) = unbounded::<UiMessage>();
     let (cmd_tx, mut cmd_rx) = tokio_mpsc::channel::<UiCommand>(10);
     let is_ui_visible = Arc::new(AtomicBool::new(true));
-
     let main_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
 
-    // --- Server Thread ---
-    let is_running_server = is_running.clone();
-    let redundancy_enabled_server = redundancy_enabled.clone();
-    let ui_stats_tx_server = ui_stats_tx.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        rt.block_on(async move {
-            let discovery = DiscoveryServer::new();
-            let port = 12345;
-            let _ = discovery.start_broadcast(port);
-            let mut server_active = true;
-            let mut sequence = 0u64;
-            loop {
-                if !server_active {
-                    is_running_server.store(false, Ordering::SeqCst);
-                    while let Some(cmd) = cmd_rx.recv().await {
-                        match cmd {
-                            UiCommand::ToggleServer => {
-                                server_active = true;
-                                break;
-                            }
-                            UiCommand::SetRedundancy(enabled) => {
-                                redundancy_enabled_server.store(enabled, Ordering::SeqCst);
-                                let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
-                            }
-                        }
-                    }
-                }
-                is_running_server.store(true, Ordering::SeqCst);
-                let socket = match bind_socket(port) { Ok(s) => Arc::new(s), Err(_) => { tokio::time::sleep(std::time::Duration::from_secs(3)).await; continue; } };
-                let mut target_addr = String::new();
-                let mut buf = [0u8; 1024];
-                loop {
-                    tokio::select! {
-                        msg = cmd_rx.recv() => { 
-                            if let Some(cmd) = msg { 
-                                match cmd {
-                                    UiCommand::ToggleServer => { server_active = false; break; }
-                                    UiCommand::SetRedundancy(enabled) => {
-                                        redundancy_enabled_server.store(enabled, Ordering::SeqCst);
-                                        let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
-                                    }
-                                }
-                            } 
-                        }
-                        result = socket.recv_from(&mut buf) => { if let Ok((len, addr)) = result { if len >= 12 && &buf[0..12] == b"AS2P_HELLO__" { target_addr = format!("{}:12345", addr.ip()); break; } } }
-                    }
-                }
-                if !server_active { continue; }
-                let mut udp_sender = match UdpSender::new(&target_addr).await { Ok(s) => s, Err(_) => continue };
-                udp_sender.redundancy = redundancy_enabled_server.load(Ordering::SeqCst);
-                
-                let mut capturer = match AudioCapturer::new() { Ok(c) => c, Err(_) => continue };
-                let mut encoder = match create_encoder() { Ok(e) => e, Err(_) => continue };
-
-                let mut current_bitrate = 128000;
-                let current_complexity = 5;
-                let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
-
-                let mut pcm_buffer = Vec::with_capacity(1920 * 10);
-                loop {
-                    tokio::select! {
-                        cmd_msg = cmd_rx.recv() => { 
-                            if let Some(cmd) = cmd_msg { 
-                                match cmd {
-                                    UiCommand::ToggleServer => { server_active = false; break; }
-                                    UiCommand::SetRedundancy(enabled) => {
-                                        redundancy_enabled_server.store(enabled, Ordering::SeqCst);
-                                        udp_sender.redundancy = enabled;
-                                        let _ = ui_stats_tx_server.send(UiMessage::SyncRedundancy(enabled));
-                                    }
-                                }
-                            } 
-                        }
-
-                        // --- Receive Control Packets (0x02: Config, 0x03: Disconnect) ---
-                        result = socket.recv_from(&mut buf) => {
-                            if let Ok((len, _addr)) = result {
-                                if len >= 6 && buf[0] == 0x02 {
-                                    let mut bitrate = i32::from_le_bytes(buf[1..5].try_into().unwrap());
-                                    let mut complexity = buf[5] as i32;
-
-                                    if bitrate < 16000 { bitrate = 16000; }
-                                    if bitrate > 512000 { bitrate = 512000; }
-                                    if complexity < 0 { complexity = 0; }
-                                    if complexity > 10 { complexity = 10; }
-
-                                    if let Ok(_) = configure_encoder(&mut encoder, bitrate, complexity) {
-                                        current_bitrate = bitrate;
-                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
-                                            packets: sequence,
-                                            bitrate: current_bitrate,
-                                            client_ip: Some(target_addr.clone())
-                                        });
-                                    }
-                                } else if len >= 1 && buf[0] == 0x03 {
-                                    let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
-                                        packets: 0,
-                                        bitrate: 128000,
-                                        client_ip: None
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                            let mut read_error = false;
-                            while let Ok(res) = capturer.read_samples() {
-                                if let Some(mut pcm) = res {
-                                    pcm_buffer.append(&mut pcm);
-                                    while pcm_buffer.len() >= 1920 {
-                                        let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
-                                        let data = encode_frame(&mut encoder, &frame);
-                                        if !data.is_empty() { let _ = udp_sender.send_audio_with_seq(sequence, data).await; sequence += 1; }
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                            
-                            // 檢查 read_samples 是否返回了錯誤（如 channel 斷開）
-                            // 注意：我們現在在 read_samples 內部處理重啟，所以除非真的斷開，否則不應 break
-                            if let Err(e) = capturer.read_samples() {
-                                if e == "DEVICE_CHANGE_RETRY" {
-                                    // 只是裝置切換重試中，忽略並繼續
-                                } else {
-                                    eprintln!("Audio capture fatal error: {}", e);
-                                    read_error = true;
-                                }
-                            }
-                            
-                            if read_error { break; }
-
-                            if sequence > 0 && sequence % 500 == 0 {
-                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
-                                    packets: sequence,
-                                    bitrate: current_bitrate,
-                                    client_ip: Some(target_addr.clone())
-                                });
-                            }
-                        }
-                    }
-                }
-                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats {
-                    packets: 0,
-                    bitrate: 128000,
-                    client_ip: None
-                });
-            }
-        });
-    });
-
-    // --- UI Thread ---
     let (ui_handle_tx, ui_handle_rx) = unbounded::<slint::Weak<AppWindow>>();
     let is_running_ui = is_running.clone();
     let is_ui_visible_ui = is_ui_visible.clone();
     let cmd_tx_ui = cmd_tx.clone();
     std::thread::spawn(move || {
-        ui::run_ui(UiState {
-            is_running: is_running_ui,
-            stats_rx: ui_stats_rx,
-            cmd_tx: cmd_tx_ui,
-            is_ui_visible: is_ui_visible_ui,
-            main_thread_id: main_tid,
-        }, ui_handle_tx);
+        ui::run_ui(UiState { is_running: is_running_ui, stats_rx: ui_stats_rx, cmd_tx: cmd_tx_ui, is_ui_visible: is_ui_visible_ui, main_thread_id: main_tid, }, ui_handle_tx);
+    });
+    let ui_weak = ui_handle_rx.recv().expect("Err");
+
+    let ui_stats_tx_server = ui_stats_tx.clone();
+    let is_running_server = is_running.clone();
+    let debug_mode = args.debug;
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let mut state = ServerState::Listening; // Auto-start
+            is_running_server.store(true, Ordering::SeqCst); // Sync atomic
+            
+            // Re-evaluating UI sync: 
+            // The UI thread reads `is_running` every 250ms (in run_ui -> timer).
+            // So simply setting `is_running` to true and `state` to Listening is enough for UI visual.
+            // But we need to make sure the loop logic handles this.
+            
+            // Re-evaluating UI sync: 
+            // The UI thread reads `is_running` every 250ms (in run_ui -> timer).
+            // So simply setting `is_running` to true and `state` to Listening is enough for UI visual.
+            // But we need to make sure the loop logic handles this.
+            
+            let mut redundancy = true;
+            let mut current_bitrate = 160000;
+            let mut current_complexity = 5;
+
+            loop {
+                match state {
+                    ServerState::Idle => {
+                        is_running_server.store(false, Ordering::SeqCst);
+                        while let Some(cmd) = cmd_rx.recv().await {
+                            match cmd {
+                                UiCommand::ToggleServer => { state = ServerState::Listening; break; }
+                                UiCommand::SetRedundancy(r) => redundancy = r,
+                            }
+                        }
+                    }
+                    ServerState::Listening => {
+                        is_running_server.store(true, Ordering::SeqCst);
+                        if debug_mode { println!("{} Waiting for AS2P_DISCOVER...", "[CONN]".blue()); }
+                        
+                        let socket = Arc::new(bind_socket(12345).expect("Err"));
+                        let mut buf = [0u8; 1024];
+                        let mut target_addr: Option<std::net::SocketAddr> = None;
+
+                        loop {
+                            tokio::select! {
+                                msg = cmd_rx.recv() => {
+                                    match msg {
+                                        Some(UiCommand::ToggleServer) => { state = ServerState::Idle; break; }
+                                        Some(UiCommand::SetRedundancy(r)) => redundancy = r,
+                                        _ => {}
+                                    }
+                                }
+                                result = socket.recv_from(&mut buf) => {
+                                    if let Ok((len, addr)) = result {
+                                        if len >= 13 && &buf[0..13] == b"AS2P_DISCOVER" {
+                                            let fixed_addr = std::net::SocketAddr::new(addr.ip(), 12345);
+                                            target_addr = Some(fixed_addr);
+                                            let _ = socket.send_to(b"AS2P_OFFER", fixed_addr).await;
+                                            if debug_mode { println!("{} Offer sent to {}", "[CONN]".blue(), fixed_addr); }
+                                        } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
+                                            current_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
+                                            current_complexity = buf[15] as i32;
+                                            state = ServerState::Streaming;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if state == ServerState::Streaming && target_addr.is_some() {
+                            let target = target_addr.unwrap();
+                            let mut udp_sender = UdpSender::new(socket.clone(), target, debug_mode);
+                            let mut capturer = AudioCapturer::new(debug_mode).expect("Err");
+                            let mut encoder = create_encoder().expect("Err");
+                            let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
+                            let mut pcm_buffer = Vec::with_capacity(1920 * 10);
+                            let mut sequence = 0u64;
+                            let start_time = std::time::Instant::now();
+                            let mut last_redundancy_log = std::time::Instant::now();
+
+                            loop {
+                                if debug_mode && redundancy && last_redundancy_log.elapsed().as_secs() >= 2 {
+                                    println!("{} Redundancy is ON (Double-sending packets)", "[DEBUG]".magenta());
+                                    last_redundancy_log = std::time::Instant::now();
+                                }
+                                tokio::select! {
+                                    cmd_msg = cmd_rx.recv() => {
+                                        match cmd_msg {
+                                            Some(UiCommand::ToggleServer) => { state = ServerState::Stopping; break; }
+                                            Some(UiCommand::SetRedundancy(r)) => redundancy = r,
+                                            _ => {}
+                                        }
+                                    }
+                                    result = socket.recv_from(&mut buf) => {
+                                        if let Ok((len, _)) = result {
+                                            if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
+                                                let new_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
+                                                let new_complexity = buf[15] as i32;
+
+                                                if new_bitrate == current_bitrate && new_complexity == current_complexity {
+                                                    if debug_mode { println!("{} Received redundant config, ignoring.", "[AUDIO]".blue()); }
+                                                    continue;
+                                                }
+
+                                                // Hot-reload config
+                                                if debug_mode { println!("{} Hot-reloading config ({}bps)...", "[AUDIO]".green(), new_bitrate); }
+                                                
+                                                current_bitrate = new_bitrate;
+                                                current_complexity = new_complexity;
+                                                
+                                                // 2. Fade-out
+                                                capturer.start_fade_out();
+                                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                                
+                                                // 3. Re-create Encoder & Reset Capturer (Implicit Fade-in)
+                                                encoder = create_encoder().expect("Err");
+                                                let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
+                                                let _ = capturer.reinitialize(); // This resets fader to 0 and fades in to 1
+                                                
+                                                // 4. Reset Buffer
+                                                pcm_buffer.clear();
+                                                sequence = 0; // Optional: Resetting seq might cause jump on client, but Config implies restart
+                                                
+                                                if debug_mode { println!("{} Config Applied: {}bps", "[AUDIO]".green(), current_bitrate); }
+                                            } else if len >= 12 && &buf[0..12] == b"AS2P_GOODBYE" {
+                                                if debug_mode { println!("{} Client disconnected gracefully.", "[CONN]".blue()); }
+                                                state = ServerState::Listening; break;
+                                            }
+                                        }
+                                    }
+                                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
+                                        let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
+                                            packets: sequence, 
+                                            bitrate: current_bitrate, 
+                                            client_ip: Some(target.to_string()) 
+                                        });
+
+                                        for _ in 0..10 {
+                                            match capturer.next_event() {
+                                                CaptureEvent::Data(pcm) => {
+                                                    if pcm.is_empty() { break; }
+                                                    pcm_buffer.extend(pcm);
+                                                    while pcm_buffer.len() >= 1920 {
+                                                        let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
+                                                        let data = encode_frame(&mut encoder, &frame);
+                                                        if !data.is_empty() {
+                                                            let ts = start_time.elapsed().as_millis() as u64;
+                                                            let _ = udp_sender.send_audio_v8(sequence, ts, data).await;
+                                                            if redundancy {
+                                                                // Redundancy handled manually or via UdpSender
+                                                            }
+                                                            sequence += 1;
+                                                        }
+                                                    }
+                                                }
+                                                CaptureEvent::DeviceChanged(name) => {
+                                                    if debug_mode { println!("{} Device Switched to {}", "[AUDIO]".green(), name); }
+                                                    pcm_buffer.clear();
+                                                }
+                                                CaptureEvent::Error(e) => {
+                                                    if debug_mode { println!("{} Audio Error: {}", "[ERROR]".red(), e); }
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if state == ServerState::Stopping {
+                                if debug_mode { println!("{} Stopping Stream (Graceful)...", "[CONN]".blue()); }
+                                capturer.start_fade_out();
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                let _ = udp_sender.send_control("AS2P_GOODBYE").await;
+                                state = ServerState::Idle;
+                            }
+                            let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
+                        }
+                    }
+                    _ => state = ServerState::Idle,
+                }
+            }
+        });
     });
 
-    let ui_weak = ui_handle_rx.recv().expect("UI handle error");
-
-    // --- Tray Loop ---
     let tray_menu = Menu::new();
-    let toggle_item = MenuItem::with_id("toggle", "Hide Window", true, None);
-    let server_item = MenuItem::with_id("server_toggle", "Start Server", true, None);
-    let redundancy_item = MenuItem::with_id("redundancy_toggle", "Enable Redundancy", true, None);
-    let quit_item = MenuItem::with_id("quit", "Quit", true, None);
     let _ = tray_menu.append_items(&[
-        &toggle_item,
-        &server_item,
-        &redundancy_item,
-        &MenuItem::new("---", false, None),
-        &quit_item
+        &MenuItem::with_id("toggle", "Show/Hide Window", true, None),
+        &MenuItem::with_id("server_toggle", "Start/Stop Server", true, None),
+        &MenuItem::with_id("quit", "Quit", true, None),
     ]);
-
-    let tray_icon = TrayIconBuilder::new()
+    
+    let mut _tray = Some(TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_icon(load_embedded_icon())
-        .with_tooltip("AS2P Audio Server")
-        .build()?;
+        .with_tooltip("AS2P Server")
+        .build()?);
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayIconEvent::receiver();
-
     let mut msg = MSG::default();
+    
+    let mut last_tray_state = false;
+
     unsafe {
         while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            TranslateMessage(&msg); DispatchMessageW(&msg);
+            
+            let current_running = is_running.load(Ordering::SeqCst);
+            if current_running != last_tray_state {
+                if let Some(ref tray) = _tray {
+                    let _ = tray.set_tooltip(Some(if current_running { "AS2P Server (Streaming)" } else { "AS2P Server (Idle)" }));
+                }
+                last_tray_state = current_running;
+            }
 
             let hwnd = FindWindowW(None, w!("AS2P_SERVER_UI")).unwrap_or(HWND(std::ptr::null_mut()));
             let visible = !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool();
             is_ui_visible.store(visible, Ordering::SeqCst);
-
-            // Force set icon if window is found
-            if !hwnd.0.is_null() {
-                let h_instance = GetModuleHandleW(None).unwrap();
-                // Load the icon from the executable resources (ID 1 is default for winres)
-                let h_icon = LoadIconW(h_instance, PCWSTR(1 as *const u16)).unwrap_or_else(|_| {
-                    LoadIconW(None, IDI_APPLICATION).unwrap()
-                });
-                SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_SMALL as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
-                SendMessageW(hwnd, WM_SETICON, windows::Win32::Foundation::WPARAM(ICON_BIG as usize), windows::Win32::Foundation::LPARAM(h_icon.0 as isize));
-            }
-
-            let redundancy = redundancy_enabled.load(Ordering::SeqCst);
-
-            let _ = toggle_item.set_text(if visible { "Hide Window" } else { "Show Window" });
-            let _ = server_item.set_text(if is_running.load(Ordering::SeqCst) { "Stop Server" } else { "Start Server" });
-            let _ = redundancy_item.set_text(if redundancy { "\u{2713} Enable Redundancy" } else { "Enable Redundancy" });
-
+            
             while let Ok(event) = menu_channel.try_recv() {
                 match event.id.0.as_str() {
-                    "toggle" => {
-                        if !hwnd.0.is_null() {
-                            if visible {
-                                let _ = ShowWindow(hwnd, SW_HIDE);
-                            } else {
-                                let _ = ShowWindow(hwnd, SW_SHOW);
-                                let _ = ShowWindow(hwnd, SW_RESTORE);
-                                let _ = SetForegroundWindow(hwnd);
-                                let _ = InvalidateRect(hwnd, None, false);
-                                let _ = UpdateWindow(hwnd);
-
-                                let ui_weak_clone = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak_clone.upgrade() {
-                                        let old = ui.get_refresh_counter();
-                                        ui.set_refresh_counter(old + 1);
-                                        ui.window().request_redraw();
-                                    }
-                                });
-                            }
-                        }
-                    }
+                    "toggle" => { if !hwnd.0.is_null() { if visible { ShowWindow(hwnd, SW_HIDE); } else { force_window_redraw(hwnd, &ui_weak); } } }
                     "server_toggle" => { let _ = cmd_tx.try_send(UiCommand::ToggleServer); }
-                    "redundancy_toggle" => {
-                        let current = redundancy_enabled.load(Ordering::SeqCst);
-                        let _ = cmd_tx.try_send(UiCommand::SetRedundancy(!current));
+                    "quit" => {
+                        _tray.take(); // 關鍵：先手動移除圖示
+                        PostQuitMessage(0); // 讓主迴圈結束
                     }
-                    "quit" => { drop(tray_icon); std::process::exit(0); }
                     _ => {}
                 }
             }
             while let Ok(event) = tray_channel.try_recv() {
-                if let TrayIconEvent::DoubleClick { .. } = event {
-                    if !hwnd.0.is_null() {
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                        let _ = ShowWindow(hwnd, SW_RESTORE);
-                        let _ = SetForegroundWindow(hwnd);
-                        let _ = InvalidateRect(hwnd, None, false);
-                        let _ = UpdateWindow(hwnd);
-
-                        let ui_weak_clone = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak_clone.upgrade() {
-                                let old = ui.get_refresh_counter();
-                                ui.set_refresh_counter(old + 1);
-                                ui.window().request_redraw();
-                            }
-                        });
-                    }
-                }
+                if let TrayIconEvent::DoubleClick { .. } = event { if !hwnd.0.is_null() { force_window_redraw(hwnd, &ui_weak); } }
             }
         }
     }

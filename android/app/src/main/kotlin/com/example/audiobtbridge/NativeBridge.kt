@@ -7,6 +7,7 @@ object NativeBridge {
 
     external fun initNative(): Int
     external fun stopNative()
+    external fun resetAudio()
     external fun setBufferSize(size: Int)
     external fun getBufferDepth(): Int
     external fun getPLCCount(): Int

@@ -10,9 +10,11 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,21 +33,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Force Dark Theme for modern tech look
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF00E5FF), // Cyan
-                    secondary = Color(0xFF7C4DFF), // Deep Purple
-                    background = Color(0xFF0A0A0A), // Near Black
-                    surface = Color(0xFF161616), // Dark Gray
-                    onSurface = Color.White,
-                    error = Color(0xFFFF5252)
-                )
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
+            MaterialTheme(colorScheme = darkColorScheme(
+                primary = Color(0xFF64FFDA),
+                surface = Color(0xFF121212),
+                background = Color(0xFF0A0A0A),
+                error = Color(0xFFFF5252)
+            )) {
+                Surface(color = MaterialTheme.colorScheme.background) {
                     MainScreen(this)
                 }
             }
@@ -56,28 +50,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LatencyChart(history: List<Float>, modifier: Modifier = Modifier) {
     val primaryColor = MaterialTheme.colorScheme.primary
-    
-    Box(modifier = modifier.height(100.dp).fillMaxWidth()) {
+    Box(modifier = modifier.height(120.dp).fillMaxWidth().background(Color.Black.copy(0.3f), RoundedCornerShape(16.dp)).padding(8.dp)) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            if (history.isEmpty()) return@Canvas
-            
-            val maxLatency = history.maxOrNull()?.coerceAtLeast(100f) ?: 100f
+            if (history.size < 2) return@Canvas
+            val maxLatency = 200f // 固定刻度以便觀察
             val width = size.width
             val height = size.height
             val stepX = width / 60f
-            
             val path = Path()
-            history.forEachIndexed { index, value ->
+            history.takeLast(60).forEachIndexed { index, value ->
                 val x = index * stepX
-                val y = height - (value / maxLatency * height)
+                val y = height - (value.coerceIn(0f, maxLatency) / maxLatency * height)
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-            
-            drawPath(
-                path = path,
-                color = primaryColor,
-                style = Stroke(width = 2.dp.toPx())
-            )
+            drawPath(path = path, color = primaryColor, style = Stroke(width = 2.dp.toPx()))
         }
     }
 }
@@ -88,70 +74,33 @@ fun MainScreen(context: Context) {
     val latency by AudioService.latencyFlow.collectAsState()
     val history by AudioService.latencyHistoryFlow.collectAsState()
     val currentMode by AudioService.latencyModeFlow.collectAsState()
+    val isSearching by AudioService.isSearchingFlow.collectAsState()
+    val debugLogs by AudioService.debugLogsFlow.collectAsState()
+    var showDebug by remember { mutableStateOf(false) }
 
-    val prefs = context.getSharedPreferences("prefs", Context.MODE_PRIVATE)
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Spacer(modifier = Modifier.height(16.dp))
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("PC Audio Stream to Phone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
+            IconButton(onClick = { showDebug = !showDebug }) {
+                Text(if (showDebug) "🛠️" else "⚙️")
+            }
+        }
         
-        Text(
-            text = "PC Audio to Phone",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Black,
-            color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 1.sp
-        )
+        if (isSearching && serviceState) {
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary)
+            Text("Searching for Server...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Surface(
-                        modifier = Modifier.size(10.dp),
-                        shape = RoundedCornerShape(5.dp),
-                        color = if (serviceState) Color.Green else Color.Red
-                    ) {}
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (serviceState) "ACTIVE STREAMING" else "DISCONNECTED",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (serviceState) Color.Green else Color.Red,
-                        letterSpacing = 1.sp
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                
-                Text(
-                    text = "%.1f".format(latency),
-                    style = MaterialTheme.typography.displayMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "BUFFER LATENCY (MS)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.Gray
-                )
-                
+        // Latency Info Card
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(text = if (serviceState) "ACTIVE" else "IDLE", color = if (serviceState) Color.Green else Color.Gray)
+                Text(text = "%.1f".format(latency), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold)
+                Text(text = "LATENCY (MS)", style = MaterialTheme.typography.labelSmall)
                 Spacer(modifier = Modifier.height(16.dp))
-                
                 LatencyChart(history = history)
             }
         }
@@ -159,63 +108,29 @@ fun MainScreen(context: Context) {
         Spacer(modifier = Modifier.height(20.dp))
 
         // Preset Selection
-        Text(
-            text = "AUDIO PRESETS",
-            style = MaterialTheme.typography.labelLarge,
-            color = Color.Gray,
-            modifier = Modifier.align(Alignment.Start).padding(start = 8.dp, bottom = 8.dp)
-        )
-        
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            val radioOptions = listOf(
-                LatencyMode.LOW_LATENCY, 
-                LatencyMode.BALANCE, 
-                LatencyMode.HIGH_QUALITY,
-                LatencyMode.BEST_QUALITY
-            )
-            Column(
-                modifier = Modifier.selectableGroup().padding(vertical = 4.dp)
-            ) {
-                radioOptions.forEach { mode ->
-                    val selected = mode == currentMode
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .selectable(
-                                selected = selected,
-                                onClick = {
-                                    prefs.edit().putString("preset", mode.name).apply()
-                                    AudioService.setModeOffline(mode)
-                                    if (serviceState) {
-                                        val intent = Intent(context, AudioService::class.java).apply {
-                                            action = AudioService.ACTION_UPDATE_MODE
-                                            putExtra(AudioService.EXTRA_MODE, mode.name)
-                                        }
-                                        context.startService(intent)
-                                    }
-                                },
-                                role = Role.RadioButton
-                            )
-                            .padding(horizontal = 20.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = selected,
-                            onClick = null,
-                            colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(
-                            text = mode.name.replace("_", " "),
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            modifier = Modifier.padding(start = 16.dp),
-                            color = if (selected) MaterialTheme.colorScheme.primary else Color.White
-                        )
+        val radioOptions = listOf(LatencyMode.LOW_LATENCY, LatencyMode.BALANCE, LatencyMode.HIGH_QUALITY, LatencyMode.BEST_QUALITY)
+        Column(modifier = Modifier.selectableGroup().fillMaxWidth()) {
+            radioOptions.forEach { mode ->
+                val selected = mode == currentMode
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).selectable(
+                        selected = selected,
+                        onClick = {
+                            AudioService.setModeOffline(mode)
+                            val intent = Intent(context, AudioService::class.java).apply {
+                                action = AudioService.ACTION_UPDATE_MODE
+                                putExtra(AudioService.EXTRA_MODE, mode.name)
+                            }
+                            context.startService(intent)
+                        },
+                        role = Role.RadioButton
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primary.copy(0.1f) else Color.Transparent
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selected, onClick = null)
+                        Text(text = mode.name.replace("_", " "), modifier = Modifier.padding(start = 16.dp))
                     }
                 }
             }
@@ -223,37 +138,34 @@ fun MainScreen(context: Context) {
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Toggle Button - CRITICAL: Connect/Disconnect Button
+        // Debug Console
+        AnimatedVisibility(visible = showDebug) {
+            Card(
+                modifier = Modifier.fillMaxWidth().height(150.dp).padding(bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                androidx.compose.foundation.rememberScrollState()
+                val scrollState = androidx.compose.foundation.rememberScrollState()
+                LaunchedEffect(debugLogs) { scrollState.animateScrollTo(scrollState.maxValue) }
+                Column(modifier = Modifier.padding(8.dp).verticalScroll(scrollState)) {
+                    Text(debugLogs, color = Color.Green, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                }
+            }
+        }
+
         Button(
             onClick = {
-                if (serviceState) {
-                    val intent = Intent(context, AudioService::class.java).apply { action = AudioService.ACTION_STOP }
-                    context.startService(intent)
-                } else {
-                    val intent = Intent(context, AudioService::class.java)
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                        context.startForegroundService(intent)
-                    } else {
-                        context.startService(intent)
-                    }
+                val intent = Intent(context, AudioService::class.java).apply {
+                    action = if (serviceState) AudioService.ACTION_STOP else AudioService.ACTION_START
                 }
+                if (serviceState) context.startService(intent) else context.startForegroundService(intent)
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
+            modifier = Modifier.fillMaxWidth().height(64.dp),
             shape = RoundedCornerShape(32.dp),
-            colors = if (serviceState) 
-                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) 
-                else ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            colors = ButtonDefaults.buttonColors(containerColor = if (serviceState) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
         ) {
-            Text(
-                text = if (serviceState) "STOP STREAMING" else "START STREAMING",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = if (serviceState) Color.White else Color.Black
-            )
+            Text(if (serviceState) "STOP" else "CONNECT", fontWeight = FontWeight.Bold)
         }
-        
-        Spacer(modifier = Modifier.height(16.dp))
     }
 }

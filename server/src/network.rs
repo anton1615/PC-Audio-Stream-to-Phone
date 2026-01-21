@@ -1,35 +1,41 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
+use colored::*;
 
 pub struct UdpSender {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     target: SocketAddr,
-    pub redundancy: bool,
+    pub debug_enabled: bool,
 }
 
 impl UdpSender {
-    pub async fn new(target: &str) -> Result<Self, String> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
-        let target_addr: SocketAddr = target.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
-        Ok(Self {
+    pub fn new(socket: Arc<UdpSocket>, target: SocketAddr, debug: bool) -> Self {
+        Self {
             socket,
-            target: target_addr,
-            redundancy: true,
-        })
+            target,
+            debug_enabled: debug,
+        }
     }
 
-    pub async fn send_audio_with_seq(&mut self, sequence: u64, payload: Vec<u8>) -> Result<(), String> {
-        let mut packet = Vec::with_capacity(8 + payload.len());
+    pub async fn send_control(&mut self, prefix: &str) -> Result<(), String> {
+        if self.debug_enabled {
+            println!("{} Sent: {}", "[CONN]".blue(), prefix.bold());
+        }
+        self.socket.send_to(prefix.as_bytes(), self.target).await.map_err(|e: std::io::Error| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn send_audio_v8(&mut self, sequence: u64, timestamp: u64, payload: Vec<u8>) -> Result<(), String> {
+        // AS2P_AUDIO Prefix + Seq(8) + TS(8) + Data
+        let prefix = b"AS2P_AUDIO";
+        let mut packet = Vec::with_capacity(prefix.len() + 8 + 8 + payload.len());
+        packet.extend_from_slice(prefix);
         packet.extend_from_slice(&sequence.to_le_bytes());
+        packet.extend_from_slice(&timestamp.to_le_bytes());
         packet.extend_from_slice(&payload);
 
-        self.socket.send_to(&packet, self.target).await.map_err(|e| e.to_string())?;
-        
-        if self.redundancy {
-            // Re-send the same packet for redundancy
-            let _ = self.socket.send_to(&packet, self.target).await;
-        }
-        
+        self.socket.send_to(&packet, self.target).await.map_err(|e: std::io::Error| e.to_string())?;
         Ok(())
     }
 }

@@ -25,82 +25,69 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
-    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** for real-time monitoring.
-*   **Ultra-Low Latency**: Utilizes **Oboe (C++)** on Android for AAudio support and **WASAPI** on Windows.
-*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo for studio-quality streaming.
+    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **Debug Console**.
+*   **Ultra-Low Latency (Pulse Architecture)**: 
+    *   **UDP Port Unification**: Uses a single port (12345) for all traffic to maximize firewall penetration.
+    *   **Jitter Buffer Catch-up**: Automatically drops old packets to maintain a strict latency target.
+*   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **Forced Resampling** (rubato) on the server.
+*   **Anti-Clipping**: 10ms linear Fade-out/Fade-in on all transitions (Start/Stop/Device Change).
 *   **CPU Efficient**: Optimized Windows server using **Slint Software Rendering**, consuming < 1% CPU even when hidden.
-*   **Background Ready**: 
-    *   **Windows**: Designed to stay alive in the System Tray.
-    *   **Android**: Fully compatible with Android 14/15 background restrictions. Uses **MediaSession** to prevent CPU/Network throttling.
-*   **Android 15 (16KB) Ready**: Native libraries are 16KB page-aligned for compatibility with modern hardware like Pixel 6a/7/8.
-*   **Hot-swapping Support**: Automatically detects Bluetooth headset connection/disconnection and routes audio without restarting the app.
-*   **Stability First**: 4-preset system to balance between extreme low latency and rock-solid background playback.
-*   **Packet Loss Concealment (PLC)**: Uses Opus native PLC to handle network drops without audio artifacts.
-*   **Double-Send Redundancy**: Server-side redundancy option to ensure audio stability on unstable Wi-Fi.
-*   **Auto-Discovery**: Support for mDNS (Bonjour) for easy connection.
+*   **Background Ready**: Uses **MediaSession** on Android to prevent system throttling.
+*   **Stability First**: 
+    *   **Config Watchdog**: Android client automatically resyncs configuration if audio drops.
+    *   **Sequence Realignment**: Automatically recovers from network jumps without mechanical noise.
+*   **Auto-Discovery**: Fast UDP-based server detection.
 
 ## Supported Platforms
 
 ### Windows (Server)
 *   **Tested**: Windows 10/11 (x64).
-*   **Optimized**: Specifically designed to work flawlessly on systems where hardware-accelerated GUI frameworks (like OpenGL/Vulkan) might cause driver overhead when running in the background.
+*   **Optimized**: Specifically designed to work flawlessly in background modes.
 
 ### Android (Client)
 *   **Minimum**: Android 9.0 (Pie / API 28).
 *   **Recommended**: Android 13/14/15.
-*   **Hardware**: Fully supports 16KB page size environments (e.g., Pixel 6a on Android 15).
+*   **Hardware**: Fully supports 16KB page size environments (e.g., Pixel 6a).
 
 ---
 
 ## Technical Stack
-*   **Backend (Rust)**: `cpal` for audio capture, `audiopus` for encoding, **Slint** for the GUI (Software Renderer backend).
-*   **Mobile (Kotlin/C++)**: `Oboe` (Built from source) for low-latency playback, `Opus` for decoding.
-*   **Native Integration**: 16KB ELF alignment and static linking for maximum compatibility.
-*   **Protocol**: Custom UDP-based protocol with sequence tracking for packet loss mitigation.
+*   **Backend (Rust)**: `cpal` for capture, `rubato` for resampling, `audiopus` for encoding, **Slint** for the GUI.
+*   **Mobile (Kotlin/C++)**: `Oboe` (C++) for low-latency playback, `Jetpack Compose` for UI.
+*   **Protocol**: **AS2P Pulse V8** (Custom UDP-based protocol).
 
 ---
 
 ## Initial Setup
 
 ### 1. Windows Audio Settings
-To ensure the best audio quality and avoid sample rate conversion issues:
+To ensure the best audio quality:
 *   Open **Sound Settings** on your Windows PC.
-*   Go to **Sound Control Panel** -> **Playback** tab.
-*   Right-click your default output device -> **Properties**.
-*   In the **Advanced** tab, set the **Default Format** to **24-bit (or 16-bit), 48000 Hz (Studio Quality)**.
+*   Set your default output device format to **48000 Hz (Studio Quality)**.
 
 ### 2. Firewall Configuration
 The server communicates over **UDP Port 12345**.
-*   When you first run `server.exe`, Windows Firewall may ask for permission. Ensure you check both **Private** and **Public** networks.
-*   If you cannot connect, manually add an Inbound Rule in Windows Firewall to allow **UDP port 12345**.
+*   Ensure your firewall allows inbound/outbound traffic on this port for both Server and Client.
 
 ---
 
 ## How to Use
 
-### 1. Download Binaries
-Download the latest versions (v1.0.3) from the [Releases](https://github.com/anton1615/PC-Audio-Stream-to-Phone/releases) page:      
-*   `server.exe` (Windows)
-*   `app-debug.apk` (Android)
+### 1. Launch Server
+1.  Run `server.exe` (use `--debug` for terminal logs).
+2.  The server starts in **Listening** mode automatically.
 
-### 2. Setup
-1.  **Launch Server**: Run `server.exe` on your PC. Allow it through the Windows Firewall if prompted. Click **START STREAMING**.
-2.  **Connect Client**: Open the app on your Android phone. Click **START STREAMING**. It should automatically detect your PC via the mDNS broadcast.  
-3.  **Go Background**: 
-    *   **PC**: You can safely close the server window. It will minimize to the System Tray.
-    *   **Android**: You can switch to other apps or lock your screen. The audio will continue.
-4.  **Adjust Presets**: Choose between **LOW_LATENCY** (20ms), **BALANCE** (60ms), **HIGH_QUALITY** (140ms), and **BEST_QUALITY** (260ms) depending on your Wi-Fi stability.
+### 2. Connect Client
+1.  Open the Android app.
+2.  Click **CONNECT**. It will broadcast a discovery signal and link with the server instantly.
+3.  **Debug Mode**: Toggle the wrench icon to see the real-time connection log.
+
+### 3. Adjust Presets
+Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALITY** depending on your Wi-Fi stability.
 
 ## Troubleshooting
-*   **16KB / ELF Warning**: Ensure you are using v1.0.3+. Earlier versions are not compatible with Android 15's 16KB requirement.
-*   **No Devices Found**: Ensure both devices are on the same Wi-Fi network. Check if your PC's firewall is blocking **UDP Port 12345**.
-*   **Audio Stuttering**: Try **BEST_QUALITY** mode or switch to a 5GHz Wi-Fi band.
-*   **No Audio Captured**: Ensure your PC is playing sound through the default output device *before* starting the server.  
+*   **Zombie Icon**: Fixed in V8. Clicking Quit now removes the tray icon immediately.
+*   **Mechanical Noise**: Ensure Windows is set to 48kHz, though the server now resamples automatically.
+*   **No Audio Captured**: Ensure your PC is playing sound through the default output device.
 ## License
 Licensed under the [MIT License](LICENSE).
-## Known Limitations / Testing Status (2026-01-20)
-- **Network Stability**: Transmission optimizations (PLC, Redundancy) and audio thread priority fixes (for lock contention) have been verified in **stable WiFi environments**.
-- **Unverified Scenarios**: **Stress testing under unstable network conditions (high packet loss/high jitter)** has **NOT** been performed due to environmental constraints and lack of specialized simulation tools.
-- **Potential Issues**: If you experience crackling or dropouts in very poor network conditions, please verify if the PLC logic in 
-ative-lib.cpp needs further tuning (e.g., increasing buffer depth or PLC aggressiveness).
-

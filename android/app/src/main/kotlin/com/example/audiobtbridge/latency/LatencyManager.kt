@@ -17,27 +17,25 @@ class LatencyManager {
     fun getConfigForMode(mode: LatencyMode): AudioConfig {
         return when (mode) {
             LatencyMode.LOW_LATENCY -> AudioConfig(
-                bufferSize = 2,      // ~20ms (1 pkt) - 極限低延遲
-                bitrate = 128000,
+                bufferSize = 2,      // ~40ms
+                bitrate = 96000,
                 complexity = 5
             )
             LatencyMode.BALANCE -> AudioConfig(
-                bufferSize = 3,      // ~60ms (3 pkts) - 平衡
-                bitrate = 19600,
+                bufferSize = 4,      // ~80ms
+                bitrate = 196000,
                 complexity = 8
             )
             LatencyMode.HIGH_QUALITY -> AudioConfig(
-                bufferSize = 7,      // ~140ms (7 pkts) - 高品質
+                bufferSize = 7,     // ~140ms
                 bitrate = 256000,
                 complexity = 10
             )
             LatencyMode.BEST_QUALITY -> AudioConfig(
-                bufferSize = 13,     // ~260ms (13 pkts) - 最穩定
-                bitrate = 320000,    // Opus 透明音質上限
+                bufferSize = 10,     // ~200ms
+                bitrate = 320000,    // Transparent
                 complexity = 10
             )
         }
     }
 }
-
-

@@ -1,10 +1,17 @@
 package com.example.audiobtbridge
 
 import android.app.*
-import android.content.*
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.bluetooth.BluetoothDevice
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.net.wifi.WifiManager
 import android.os.*
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
@@ -16,50 +23,25 @@ import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import com.example.audiobtbridge.latency.LatencyManager
-import com.example.audiobtbridge.latency.AudioConfig
 import com.example.audiobtbridge.latency.LatencyMode
-
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
+import com.example.audiobtbridge.latency.AudioConfig
 
 class AudioService : Service() {
 
-    private val serviceJob = Job()
-    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
-    private var udpSocket: DatagramSocket? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var isRunning = false
+    private var udpSocket: DatagramSocket? = null
     private var serverAddress: InetAddress? = null
-    private var lastPacketTime: Long = 0
-    private var bluetoothReceiver: BroadcastReceiver? = null
+    private val latencyManager = LatencyManager()
+    private lateinit var audioManager: AudioManager
     private var mediaSession: MediaSessionCompat? = null
     
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-    private var audioDeviceCallback: Any? = null
-
-    private val connectionManager = ConnectionManager()
-    private val latencyManager = LatencyManager()
-
     companion object {
         private val _serviceState = MutableStateFlow(false)
         val serviceState = _serviceState.asStateFlow()
 
-        private var packetCount = 0
-        private val _packetCountFlow = MutableStateFlow(0)
-        val packetCountFlow = _packetCountFlow.asStateFlow()
-
         private val _latencyModeFlow = MutableStateFlow(LatencyMode.BALANCE)
         val latencyModeFlow = _latencyModeFlow.asStateFlow()
-        
-        fun setModeOffline(mode: LatencyMode) {
-            _latencyModeFlow.value = mode
-        }
-        
-        private val _clientHelloCount = MutableStateFlow(0)
-        val clientHelloCount = _clientHelloCount.asStateFlow()
-
-        private val _lastSequenceFlow = MutableStateFlow(0L)
-        val lastSequenceFlow = _lastSequenceFlow.asStateFlow()
 
         private val _latencyFlow = MutableStateFlow(0.0f)
         val latencyFlow = _latencyFlow.asStateFlow()
@@ -67,235 +49,224 @@ class AudioService : Service() {
         private val _latencyHistoryFlow = MutableStateFlow<List<Float>>(emptyList())
         val latencyHistoryFlow = _latencyHistoryFlow.asStateFlow()
 
-        const val CHANNEL_ID = "AudioServiceChannel"
-        const val NOTIFICATION_ID = 1
-        const val ACTION_STOP = "STOP_SERVICE"
-        const val ACTION_UPDATE_MODE = "UPDATE_MODE"
-        const val EXTRA_MODE = "MODE"
+        private val _isSearchingFlow = MutableStateFlow(false)
+        val isSearchingFlow = _isSearchingFlow.asStateFlow()
 
-        @JvmStatic
-        fun updateStats(seq: Long, latency: Float) {
-            _lastSequenceFlow.value = seq
-            _latencyFlow.value = latency
+        private val _debugLogsFlow = MutableStateFlow("")
+        val debugLogsFlow = _debugLogsFlow.asStateFlow()
+
+        const val ACTION_START = "ACTION_START"
+        const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_UPDATE_MODE = "ACTION_UPDATE_MODE"
+        const val EXTRA_MODE = "EXTRA_MODE"
+        private const val CHANNEL_ID = "audio_stream_channel"
+
+        fun setModeOffline(mode: LatencyMode) { _latencyModeFlow.value = mode }
+        
+        fun log(msg: String) {
+            val current = _debugLogsFlow.value
+            val lines = current.split("\n")
+            val newLog = if (lines.size > 50) lines.drop(1).joinToString("\n") + "\n" + msg else current + "\n" + msg
+            _debugLogsFlow.value = newLog
+        }
+    }
+
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (BluetoothDevice.ACTION_ACL_DISCONNECTED == intent?.action) {
+                log("Bluetooth Disconnected. Stopping Service...")
+                stopSelf()
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        registerBluetoothReceiver()
-        registerAudioDeviceCallback()
-    }
-
-    private fun registerAudioDeviceCallback() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val callback = object : android.media.AudioDeviceCallback() {
-                override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) {
-                    Log.i("AudioBT", "Audio device added, checking for BT...")
-                    addedDevices?.forEach {
-                        if (it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                            Log.i("AudioBT", "Bluetooth device detected, restarting native stream...")
-                            serviceScope.launch {
-                                delay(1000) // 等待系統完成切換
-                                NativeBridge.stopNative()
-                                delay(200)
-                                NativeBridge.initNative()
-                                val currentConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
-                                NativeBridge.setBufferSize(currentConfig.bufferSize)
-                            }
-                        }
-                    }
-                }
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        registerReceiver(bluetoothReceiver, IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED))
+        
+        // Listen for Audio Device Changes (Backup for Oboe disconnects)
+        audioManager.registerAudioDeviceCallback(object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                log("Audio Device Added: Resetting Buffer...")
+                NativeBridge.resetAudio()
+                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
             }
-            audioManager.registerAudioDeviceCallback(callback, Handler(Looper.getMainLooper()))
-            audioDeviceCallback = callback
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                log("Audio Device Removed: Resetting Buffer...")
+                NativeBridge.resetAudio()
+                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+            }
+        }, null)
+
+        mediaSession = MediaSessionCompat(this, "AS2P").apply {
+            setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f).build())
+            isActive = true
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
+            ACTION_START -> if (!isRunning) startAudioService()
+            ACTION_STOP -> stopSelf()
             ACTION_UPDATE_MODE -> {
                 val modeName = intent.getStringExtra(EXTRA_MODE)
-                if (modeName != null) {
-                    try {
-                        val newMode = LatencyMode.valueOf(modeName)
-                        updateLatencyMode(newMode)
-                    } catch (e: Exception) { }
-                }
+                modeName?.let { updateLatencyMode(LatencyMode.valueOf(it)) }
             }
         }
-
-        if (!isRunning) {
-            try {
-                NativeBridge.initNative()
-            } catch (e: Throwable) {
-                Log.e("AudioBT", "Failed to initialize native bridge: ${e.message}")
-            }
-            
-            val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
-            val savedMode = prefs.getString("preset", "BALANCE")?.uppercase() ?: "BALANCE"
-            val initialMode = try { LatencyMode.valueOf(savedMode) } catch(e: Exception) { LatencyMode.BALANCE }
-            _latencyModeFlow.value = initialMode
-
-            acquireLocks()
-            startForegroundService()
-            startAudioStream()
-        }
-
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
-    private fun acquireLocks() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioBT:WakeLock").apply {
-            acquire()
-        }
-
-        val wifiManager = getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        } else {
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF
-        }
-        wifiLock = wifiManager.createWifiLock(wifiMode, "AudioBT:WifiLock").apply {
-            acquire()
-        }
-        Log.i("AudioBT", "Locks acquired: WakeLock and WifiLock (Low Latency Mode)")
-    }
-
-    private fun releaseLocks() {
-        wakeLock?.let {
-            if (it.isHeld) it.release()
-        }
-        wakeLock = null
-
-        wifiLock?.let {
-            if (it.isHeld) it.release()
-        }
-        wifiLock = null
-        Log.i("AudioBT", "Locks released")
-    }
-
-    private fun startForegroundService() {
+    private fun startAudioService() {
         createNotificationChannel()
-        
-        // Setup MediaSession for background priority
-        mediaSession = MediaSessionCompat(this, "AS2P").apply {
-            setPlaybackState(PlaybackStateCompat.Builder()
-                .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
-                .build())
-            isActive = true
-        }
-        
-        val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
-        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AS2P")
-            .setContentText("Streaming PC Audio...")
+            .setContentTitle("PC Audio Stream to Phone")
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setOngoing(true)
-            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setMediaSession(mediaSession?.sessionToken))
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stopPendingIntent)
-            .build()
-
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true).build()
+            
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 14 (API 34) requires the type to match the manifest.
-            // Since we declared 'mediaPlayback' in Manifest, we MUST use it here.
-            // Using 'CONNECTED_DEVICE' when manifest says 'mediaPlayback' causes a crash.
-            val type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            startForeground(NOTIFICATION_ID, notification, type)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else startForeground(1, notification)
+        
         isRunning = true
         _serviceState.value = true
-    }
-
-    private fun startAudioStream() {
-        // 統計數據輪詢任務
+        _isSearchingFlow.value = true
+        NativeBridge.initNative()
+        
+        // --- Config & Audio Watchdog ---
+        var lastAudioTime = System.currentTimeMillis()
+        var configRetryCount = 0
         serviceScope.launch {
             while (isRunning) {
-                val seq = NativeBridge.getLastSequence()
-                val depth = NativeBridge.getBufferDepth()
-                // 每個 Opus 包通常是 20ms
-                val latencyMs = depth * 20.0f
-                
-                _lastSequenceFlow.value = seq
-                _latencyFlow.value = latencyMs
-
-                // Update history
-                val currentHistory = _latencyHistoryFlow.value.toMutableList()
-                currentHistory.add(latencyMs)
-                if (currentHistory.size > 60) { // Keep last 60 points
-                    currentHistory.removeAt(0)
+                val currentTime = System.currentTimeMillis()
+                if (serverAddress != null) {
+                    // 如果已連線但超過 1.5 秒沒收到音訊
+                    if (currentTime - lastAudioTime > 1500) {
+                        if (configRetryCount < 3) {
+                            log("No audio received. Retrying Config (${++configRetryCount}/3)...")
+                            sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                            lastAudioTime = currentTime // 給 Server 一點反應時間
+                        } else {
+                            log("Connection lost (Timeout). Back to searching...")
+                            serverAddress = null
+                            _isSearchingFlow.value = true
+                            configRetryCount = 0
+                        }
+                    }
                 }
-                _latencyHistoryFlow.value = currentHistory
-
-                delay(100) // 每 100ms 更新一次 UI
+                delay(500)
+            }
+        }
+        
+        // Stats Thread
+        serviceScope.launch {
+            while (isRunning) {
+                val latency = NativeBridge.getBufferDepth() * 20.0f
+                _latencyFlow.value = latency
+                val history = _latencyHistoryFlow.value.toMutableList()
+                history.add(latency)
+                if (history.size > 60) history.removeAt(0)
+                _latencyHistoryFlow.value = history
+                delay(100)
             }
         }
 
-        serviceScope.launch {
-            // 設置為高優先級，減少背景爆裂聲
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        // Receiver Loop
+        var duplicateCount = 0
+        var lastLogTime = System.currentTimeMillis()
+        var lastSeq = -1L
+
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 val socket = DatagramSocket(12345)
                 socket.receiveBufferSize = 1024 * 1024
                 udpSocket = socket
-                
                 val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
-
-                val initialConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
-                NativeBridge.setBufferSize(initialConfig.bufferSize)
+                
+                log("Service Started. Listening on UDP 12345...")
 
                 while (isRunning) {
-                    socket.receive(packet)
-                    val isHello = packet.length == 12 && packet.data[0] == 'A'.code.toByte()
-                    val isDisconnect = packet.length == 1 && packet.data[0] == 0x03.toByte()
-
-                    if (isDisconnect) {
-                        Log.i("AudioBT", "Received Disconnect command from Server")
-                        stopSelf()
-                        break
-                    } else if (!isHello) {
-                        if (serverAddress == null) {
-                            serverAddress = packet.address
-                            sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
-                        }
+                    socket.soTimeout = 3000
+                    try {
+                        socket.receive(packet)
+                        val len = packet.length
+                        val data = packet.data
                         
-                        packetCount++
-                        _packetCountFlow.value = packetCount
-                        NativeBridge.writeToNativeBuffer(packet.data, packet.length)
-                        lastPacketTime = System.currentTimeMillis()
+                        // V8 Protocol Handling
+                        if (len >= 10 && String(data, 0, 10) == "AS2P_OFFER") {
+                            if (serverAddress == null) {
+                                serverAddress = packet.address
+                                _isSearchingFlow.value = false
+                                log("Server Found: ${packet.address}")
+                                NativeBridge.resetAudio()
+                                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                                lastAudioTime = System.currentTimeMillis()
+                                configRetryCount = 0
+                            }
+                        } else if (len > 12 && String(data, 0, 10) == "AS2P_AUDIO") {
+                            _isSearchingFlow.value = false 
+                            lastAudioTime = System.currentTimeMillis()
+                            configRetryCount = 0
+                            
+                            if (len > 26) { // Prefix(10) + Seq(8) + TS(8)
+                                // Redundancy Check
+                                val seq = ByteBuffer.wrap(data, 10, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                                if (seq == lastSeq) {
+                                    duplicateCount++
+                                }
+                                lastSeq = seq
+
+                                val now = System.currentTimeMillis()
+                                if (now - lastLogTime > 2000) {
+                                    if (duplicateCount > 0) {
+                                        log("[Redundancy] Active: $duplicateCount duplicates in 2s")
+                                    } else {
+                                        // Optional: log("No duplicates detected.") // 減少干擾，僅在有收到時回報
+                                    }
+                                    duplicateCount = 0
+                                    lastLogTime = now
+                                }
+
+                                val payloadSize = len - 10
+                                val payload = ByteArray(payloadSize)
+                                System.arraycopy(data, 10, payload, 0, payloadSize)
+                                NativeBridge.writeToNativeBuffer(payload, payloadSize)
+                            }
+                        } else if (len >= 12 && String(data, 0, 12) == "AS2P_GOODBYE") {
+                            log("Server Stopped. Resetting...")
+                            serverAddress = null
+                            _isSearchingFlow.value = true
+                            NativeBridge.resetAudio()
+                        }
+                    } catch (e: java.net.SocketTimeoutException) {
+                        if (serverAddress != null) {
+                            log("Connection Timeout. Searching...")
+                            serverAddress = null
+                            _isSearchingFlow.value = true
+                        }
+                    } catch (e: Exception) {
+                        log("Error: ${e.message}")
                     }
                 }
-            } catch (e: Exception) {
-                if (isRunning) Log.e("AudioBT", "Receiver error: ${e.message}")
-            } finally {
-                udpSocket?.close()
-            }
+            } catch (e: Exception) { log("Socket Error: ${e.message}") } finally { udpSocket?.close() }
         }
 
-        serviceScope.launch {
+        // Discovery Loop
+        serviceScope.launch(Dispatchers.IO) {
             val socket = DatagramSocket()
             socket.broadcast = true
-            val msg = "AS2P_HELLO__".toByteArray()
+            val msg = "AS2P_DISCOVER".toByteArray()
             val packet = DatagramPacket(msg, msg.size, InetAddress.getByName("255.255.255.255"), 12345)
+            log("Discovery Loop Started (Interval: 1000ms)")
             
             while (isRunning) {
-                if (connectionManager.shouldSendHello(System.currentTimeMillis(), lastPacketTime)) {
-                     try {
+                if (serverAddress == null) {
+                    try { 
                         socket.send(packet)
-                        _clientHelloCount.value += 1
-                    } catch (e: Exception) { }
+                        // log("Sent Discovery...") // Too spammy
+                    } catch (e: Exception) {}
                 }
                 delay(1000)
             }
@@ -304,107 +275,64 @@ class AudioService : Service() {
     }
 
     private fun updateLatencyMode(mode: LatencyMode) {
-        Log.i("AudioBT", "Switching to mode: ${mode.name}")
         _latencyModeFlow.value = mode
         val config = latencyManager.getConfigForMode(mode)
         NativeBridge.setBufferSize(config.bufferSize)
         sendConfigToServer(config)
+        log("Mode Updated: ${mode.name}")
     }
 
     private fun sendConfigToServer(config: AudioConfig) {
         val target = serverAddress ?: return
-        // 使用 Dispatchers.Main.immediate 或直接啟動以減少切換延遲
         serviceScope.launch(Dispatchers.IO) {
             try {
                 val socket = DatagramSocket()
-                val buffer = ByteBuffer.allocate(6).order(ByteOrder.LITTLE_ENDIAN)
-                buffer.put(0x02.toByte())
+                val prefix = "AS2P_CONFIG".toByteArray()
+                val buffer = ByteBuffer.allocate(prefix.size + 5) // Prefix + Bitrate(4) + Complexity(1)
+                buffer.put(prefix)
+                buffer.order(ByteOrder.LITTLE_ENDIAN)
                 buffer.putInt(config.bitrate)
                 buffer.put(config.complexity.toByte())
                 val data = buffer.array()
-                val packet = DatagramPacket(data, data.size, target, 12345)
-                socket.send(packet)
+                socket.send(DatagramPacket(data, data.size, target, 12345))
                 socket.close()
-                Log.d("AudioBT", "Config sent to server: ${config.bitrate}bps")
-            } catch (e: Exception) {
-                Log.e("AudioBT", "Failed to send config: ${e.message}")
-            }
+                log("Config Sent: ${config.bitrate}bps, Cmp:${config.complexity}")
+            } catch (e: Exception) { log("Config Send Failed: ${e.message}") }
         }
-    }
-
-    private fun sendDisconnectToServer() {
-        val target = serverAddress ?: return
-        Thread {
-            try {
-                val socket = DatagramSocket()
-                val packet = DatagramPacket(byteArrayOf(0x03), 1, target, 12345)
-                socket.send(packet)
-                socket.close()
-            } catch (e: Exception) { }
-        }.start()
-    }
-
-    override fun onDestroy() {
-        isRunning = false
-        sendDisconnectToServer()
-        
-        releaseLocks()
-        _serviceState.value = false
-        packetCount = 0
-        _packetCountFlow.value = 0
-        _clientHelloCount.value = 0
-        _lastSequenceFlow.value = 0L
-        _latencyFlow.value = 0.0f
-        serverAddress = null
-        
-        udpSocket?.close()
-        NativeBridge.stopNative()
-        serviceJob.cancel()
-        bluetoothReceiver?.let { unregisterReceiver(it) }
-        super.onDestroy()
-    }
-
-    private fun registerBluetoothReceiver() {
-        val filter = IntentFilter().apply {
-            addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED)
-            addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED)
-            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-        }
-        bluetoothReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                when (intent?.action) {
-                    android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                        Log.i("AudioBT", "Bluetooth ACL disconnected, stopping service")
-                        stopSelf()
-                    }
-                    android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                        Log.i("AudioBT", "Bluetooth ACL connected, re-initializing stream")
-                        serviceScope.launch {
-                            delay(500)
-                            NativeBridge.stopNative()
-                            delay(300)
-                            NativeBridge.initNative()
-                            val currentConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
-                            NativeBridge.setBufferSize(currentConfig.bufferSize)
-                        }
-                    }
-                    AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
-                        Log.i("AudioBT", "Audio becoming noisy (Headset unplugged), stopping service")
-                        stopSelf()
-                    }
-                }
-            }
-        }
-        registerReceiver(bluetoothReceiver, filter)
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val serviceChannel = NotificationChannel(CHANNEL_ID, "Audio Service Channel", NotificationManager.IMPORTANCE_LOW)
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(serviceChannel)
+            val channel = NotificationChannel(CHANNEL_ID, "AS2P", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun sendGoodbyeToServer() {
+        val target = serverAddress ?: return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val socket = DatagramSocket()
+                val data = "AS2P_GOODBYE".toByteArray()
+                socket.send(DatagramPacket(data, data.size, target, 12345))
+                socket.close()
+                log("Goodbye Sent to Server")
+            } catch (e: Exception) {}
+        }
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        sendGoodbyeToServer() // 主動告訴 Server 我要斷開了
+        NativeBridge.stopNative()
+        udpSocket?.close()
+        _serviceState.value = false
+        _isSearchingFlow.value = false
+        _latencyFlow.value = 0.0f
+        _latencyHistoryFlow.value = emptyList()
+        mediaSession?.release()
+        try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
+        super.onDestroy()
+    }
+    override fun onBind(intent: Intent?) = null
 }
