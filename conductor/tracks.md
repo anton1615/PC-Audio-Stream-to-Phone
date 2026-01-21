@@ -50,8 +50,10 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 - [x] **Track: Audio Streaming Stability & UX Improvements**
 
-*Link: [./tracks/stability_ux_fixes_20260121/](./tracks/stability_ux_fixes_20260121/)*
+*Link: [./archive/stability_ux_fixes_20260121/](./archive/stability_ux_fixes_20260121/)*
 
 *Completed on: 2026-01-21*
+
+
 
 
