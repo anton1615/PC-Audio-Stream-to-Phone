@@ -106,21 +106,67 @@ impl AudioCapturer {
         })
     }
 
-        pub fn read_samples(&mut self) -> Result<Option<Vec<f32>>, String> {
+            pub fn read_samples(&mut self) -> Result<Option<Vec<f32>>, String> {
 
-            match self.receiver.try_recv() {
+                // 每 2 秒檢查一次裝置一致性
 
-                Ok(data) => Ok(Some(data)),
+                if self.last_check.elapsed() > Duration::from_secs(2) {
 
-                Err(mpsc::TryRecvError::Empty) => Ok(None),
+                    self.last_check = Instant::now();
 
-                Err(mpsc::TryRecvError::Disconnected) => Err("Audio channel disconnected".to_string()),
+                    if !self.check_device_consistency() {
+
+                        return Err("Audio device changed".to_string());
+
+                    }
+
+                }
+
+        
+
+                match self.receiver.try_recv() {
+
+                    Ok(data) => Ok(Some(data)),
+
+                    Err(mpsc::TryRecvError::Empty) => Ok(None),
+
+                    Err(mpsc::TryRecvError::Disconnected) => Err("Audio channel disconnected".to_string()),
+
+                }
+
+            }
+
+        
+
+            fn check_device_consistency(&self) -> bool {
+
+                let host = cpal::default_host();
+
+                match host.default_output_device() {
+
+                    Some(device) => {
+
+                        #[allow(deprecated)]
+
+                        match device.name() {
+
+                            Ok(name) => name == self.device_name,
+
+                            Err(_) => false,
+
+                        }
+
+                    }
+
+                    None => false,
+
+                }
 
             }
 
         }
 
-    }
+        
 
     
 
