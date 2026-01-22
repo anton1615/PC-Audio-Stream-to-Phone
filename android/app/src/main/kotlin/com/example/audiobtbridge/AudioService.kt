@@ -209,6 +209,11 @@ class AudioService : Service() {
         _isSearchingFlow.value = true
         NativeBridge.initNative()
         
+        // --- Sync initial preset to Native layer ---
+        val initialConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
+        NativeBridge.setBufferSize(initialConfig.bufferSize)
+        Log.i("AS2P_Diag", "[Init] Synced initial Buffer Size: ${initialConfig.bufferSize}")
+
         // --- Config & Audio Watchdog ---
         var lastAudioTime = System.currentTimeMillis()
         var configRetryCount = 0
@@ -295,6 +300,8 @@ class AudioService : Service() {
                                 val seq = ByteBuffer.wrap(data, 10, 8).order(ByteOrder.LITTLE_ENDIAN).long
                                 if (connectionManager.isDuplicate(seq)) {
                                     duplicateCount++
+                                    // LOGI equivalent in Kotlin for high-frequency events if needed, 
+                                    // but let's stick to total count every 2s to avoid overwhelming logcat
                                 }
 
                                 val now = System.currentTimeMillis()

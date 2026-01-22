@@ -38,6 +38,7 @@ There are several audio streaming solutions available on the market (e.g., Audio
     *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **MediaStyle Notification**.
 *   **High Performance Architecture**:
     *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
+    *   **Fine-grained Locking**: Optimized mutex usage to prevent playback thread blocking during long decode operations.
     *   **PCM FIFO Buffer**: Uses a thread-safe circular buffer to absorb system-level performance jitter.
     *   **Oboe Exclusive Mode**: Direct hardware access for the lowest possible round-trip latency.
 *   **Smart Persistence**: Automatically remembers your last used Latency Preset.
