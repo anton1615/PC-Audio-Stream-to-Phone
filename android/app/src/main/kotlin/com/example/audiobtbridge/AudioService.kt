@@ -6,9 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.bluetooth.BluetoothDevice
-import android.media.AudioDeviceCallback
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
+import android.media.*
 import android.os.*
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -36,6 +34,16 @@ class AudioService : Service() {
     private val connectionManager = ConnectionManager()
     private lateinit var audioManager: AudioManager
     private var mediaSession: MediaSessionCompat? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                log("Audio Focus Lost. Stopping Service...")
+                stopSelf()
+            }
+        }
+    }
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -180,6 +188,26 @@ class AudioService : Service() {
 
     private fun startAudioService() {
         createNotificationChannel()
+
+        // 1. Request Audio Focus
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val playbackAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(playbackAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build()
+            
+            val result = audioManager.requestAudioFocus(audioFocusRequest!!)
+            if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                Log.i("AS2P_Diag", "Audio Focus Granted")
+            } else {
+                Log.w("AS2P_Diag", "Audio Focus Denied")
+            }
+        }
 
         // Initial MediaStyle Notification
         val mediaStyle = androidx.media.app.NotificationCompat.MediaStyle()
@@ -441,6 +469,11 @@ class AudioService : Service() {
         _latencyHistoryFlow.value = emptyList()
         mediaSession?.release()
         
+        // Abandon Audio Focus
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        }
+
         try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
         super.onDestroy()
     }
