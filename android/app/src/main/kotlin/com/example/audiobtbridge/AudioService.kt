@@ -35,7 +35,9 @@ class AudioService : Service() {
     private val latencyManager = LatencyManager()
     private val connectionManager = ConnectionManager()
     private lateinit var audioManager: AudioManager
-    private var mediaSession: MediaSessionCompat? = null
+    private var mediaSession: mediaSession: MediaSessionCompat? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -180,6 +182,15 @@ class AudioService : Service() {
 
     private fun startAudioService() {
         createNotificationChannel()
+
+        // Acquire CPU and Wi-Fi Locks
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AS2P::AudioWakeLock").apply { acquire() }
+        
+        val wm = getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AS2P::WifiLock").apply { acquire() }
+
+        Log.i("AS2P_Diag", "Locks Acquired: WakeLock and WifiLock")
 
         // Initial MediaStyle Notification
         val mediaStyle = androidx.media.app.NotificationCompat.MediaStyle()
@@ -441,6 +452,12 @@ class AudioService : Service() {
         _latencyFlow.value = 0.0f
         _latencyHistoryFlow.value = emptyList()
         mediaSession?.release()
+        
+        // Release Locks
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wifiLock?.let { if (it.isHeld) it.release() }
+        Log.i("AS2P_Diag", "Locks Released")
+
         try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
         super.onDestroy()
     }

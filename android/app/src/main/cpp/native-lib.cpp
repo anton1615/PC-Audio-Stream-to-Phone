@@ -106,7 +106,8 @@ public:
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
         // --- CATCH-UP LOGIC ---
-        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 2)) { // Allow a bit more slack
+        // Increase slack to +10 to avoid aggressive dropping during background CPU spikes
+        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 10)) { 
             LOGI("[Jitter] Drop Packet (Buffer Overflow): Seq %llu, Size: %zu", mJitterBuffer.begin()->first, mJitterBuffer.size());
             mJitterBuffer.erase(mJitterBuffer.begin());
             mExpectedSeq++;
