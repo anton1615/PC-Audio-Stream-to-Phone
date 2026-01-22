@@ -137,14 +137,16 @@ class AudioService : Service() {
 
         audioManager.registerAudioDeviceCallback(object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-                log("Audio Device Added: Resetting Buffer...")
-                NativeBridge.resetAudio()
-                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                if (isRunning) {
+                    log("Audio Device Added: Resetting Buffer...")
+                    NativeBridge.resetAudio()
+                }
             }
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-                log("Audio Device Removed: Resetting Buffer...")
-                NativeBridge.resetAudio()
-                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                if (isRunning) {
+                    log("Audio Device Removed: Resetting Buffer...")
+                    NativeBridge.resetAudio()
+                }
             }
         }, null)
 
@@ -157,7 +159,11 @@ class AudioService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> if (!isRunning) startAudioService()
-            ACTION_STOP -> stopSelf()
+            ACTION_STOP -> {
+                isRunning = false
+                serverAddress = null
+                stopSelf()
+            }
             ACTION_UPDATE_MODE -> {
                 val modeName = intent.getStringExtra(EXTRA_MODE)
                 modeName?.let { updateLatencyMode(LatencyMode.valueOf(it)) }
