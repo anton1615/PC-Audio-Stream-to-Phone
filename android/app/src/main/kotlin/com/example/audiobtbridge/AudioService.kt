@@ -101,12 +101,12 @@ class AudioService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AS2P Audio Bridge")
             .setContentText(cleanContent)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, android.R.drawable.ic_media_play))
+            .setSmallIcon(android.R.drawable.ic_media_play) // Status bar icon
+            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, R.drawable.app_icon)) // Album art
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(isRunning) // 只有在運行時才常駐
+            .setOngoing(isRunning)
             .setStyle(mediaStyle)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stopPendingIntent)
+            .addAction(R.drawable.ic_stop, "Stop", stopPendingIntent) // Custom Stop Icon
             .build()
 
         nm.notify(1, notification)
@@ -168,12 +168,25 @@ class AudioService : Service() {
 
     private fun startAudioService() {
         createNotificationChannel()
+
+        // Initial MediaStyle Notification
+        val mediaStyle = androidx.media.app.NotificationCompat.MediaStyle()
+            .setMediaSession(mediaSession?.sessionToken)
+            .setShowActionsInCompactView(0)
+
+        val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
+        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AS2P Audio Bridge")
             .setContentText("Searching for server...")
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, R.drawable.app_icon))
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true).build()
+            .setOngoing(true)
+            .setStyle(mediaStyle)
+            .addAction(R.drawable.ic_stop, "Stop", stopPendingIntent)
+            .build()
             
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)

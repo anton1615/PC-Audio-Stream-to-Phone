@@ -32,6 +32,16 @@ import com.example.audiobtbridge.latency.LatencyMode
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 1. Load Persistence
+        val prefs = getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+        val savedModeName = prefs.getString("latency_mode", LatencyMode.BALANCE.name)
+        val initialMode = try { LatencyMode.valueOf(savedModeName!!) } catch (e: Exception) { LatencyMode.BALANCE }
+        AudioService.setModeOffline(initialMode)
+
+        // 2. Request Ignore Battery Optimizations
+        checkBatteryOptimization()
+
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF64FFDA),
@@ -43,6 +53,18 @@ class MainActivity : ComponentActivity() {
                     MainScreen(this)
                 }
             }
+        }
+    }
+
+    private fun checkBatteryOptimization() {
+        val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val packageName = packageName
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            val intent = Intent().apply {
+                action = android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                data = android.net.Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
         }
     }
 }
@@ -111,6 +133,10 @@ fun MainScreen(context: Context) {
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).selectable(
                         selected = selected,
                         onClick = {
+                            // Save to Prefs
+                            val prefs = context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+                            prefs.edit().putString("latency_mode", mode.name).apply()
+
                             AudioService.setModeOffline(mode)
                             val intent = Intent(context, AudioService::class.java).apply {
                                 action = AudioService.ACTION_UPDATE_MODE
