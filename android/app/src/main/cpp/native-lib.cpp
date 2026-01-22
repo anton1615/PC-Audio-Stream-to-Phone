@@ -178,7 +178,8 @@ public:
     }
 
     void setBufferSize(int size) {
-        mTargetBufferSize = size;
+        // Validation: Clamp between 1 (20ms) and 25 (500ms) to prevent overflow/DoS
+        mTargetBufferSize = (size < 1) ? 1 : (size > 25 ? 25 : size);
         resetInternal();
     }
 
