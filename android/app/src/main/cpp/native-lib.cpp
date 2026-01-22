@@ -112,8 +112,8 @@ public:
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
         // --- CATCH-UP LOGIC ---
-        // REVERTED to +2 for minimal latency
-        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 2)) { 
+        // RESTORED to +1 for minimal latency
+        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 1)) { 
             LOGI("[Jitter] Drop Packet (Buffer Overflow): Seq %llu, Size: %zu", mJitterBuffer.begin()->first, mJitterBuffer.size());
             mJitterBuffer.erase(mJitterBuffer.begin());
             mExpectedSeq++;
