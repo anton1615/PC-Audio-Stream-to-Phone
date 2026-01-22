@@ -12,8 +12,7 @@
 #include <sched.h>
 #include <unistd.h>
 #include <sys/resource.h>
-#include <unistd.h>
-#include <sched.h>
+#include <condition_variable>
 
 #define LOG_TAG "AS2P_Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -24,12 +23,8 @@ const int MAX_FRAME_SIZE = 960;
 
 class AudioEngine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
-    AudioEngine() { 
-        createDecoder(); 
-    }
-    ~AudioEngine() { 
-        destroyDecoder(); 
-    }
+    AudioEngine() { createDecoder(); }
+    ~AudioEngine() { stop(); destroyDecoder(); }
 
     void destroyDecoder() {
         if (mOpusDecoder) { opus_decoder_destroy(mOpusDecoder); mOpusDecoder = nullptr; }
@@ -44,19 +39,23 @@ public:
     void resetInternal() {
         std::lock_guard<std::mutex> lock(mBufferMutex);
         mJitterBuffer.clear();
-        mDecodedPcmBuffer.clear();
+        mPcmBuffer.clear();
         mIsBuffering = true;
         mFirstPacket = true;
         mExpectedSeq = 0;
         mPlcCount = 0;
         if (mOpusDecoder) opus_decoder_ctl(mOpusDecoder, OPUS_RESET_STATE);
-        LOGI(">>> BUFFER CLEARED <<<");
+        LOGI(">>> ENGINE RESET <<<");
     }
 
     void start() {
         std::lock_guard<std::mutex> lock(mStreamMutex);
         if (mStream) return;
         resetInternal();
+
+        mIsRunning = true;
+        mDecodeThread = std::thread(&AudioEngine::decodeLoop, this);
+
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency) 
@@ -72,158 +71,139 @@ public:
 
     void stop() {
         std::lock_guard<std::mutex> lock(mStreamMutex);
+        mIsRunning = false;
+        mDecodeCV.notify_all();
+        if (mDecodeThread.joinable()) mDecodeThread.join();
         if (mStream) { mStream->stop(); mStream->close(); mStream.reset(); }
     }
 
     bool onError(oboe::AudioStream *audioStream, oboe::Result error) override {
         if (error == oboe::Result::ErrorDisconnected) {
-            std::thread([this]() {
-                stop();
-                start();
-            }).detach();
+            std::thread([this]() { stop(); start(); }).detach();
         }
         return false;
     }
 
+    // --- CONSUMER: AUDIO CALLBACK ---
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *audioStream, void *audioData, int32_t numFrames) override {
-        // --- THREAD PERFORMANCE SETUP (One-time) ---
-        static thread_local bool perfSet = false;
-        if (!perfSet) {
-            // 1. Thread Affinity (Big/Medium Cores 4-7)
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(4, &cpuset); CPU_SET(5, &cpuset); CPU_SET(6, &cpuset); CPU_SET(7, &cpuset);
-            if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
-                LOGI("[Performance] Thread Affinity set to cores 4-7");
-            }
-
-            // 2. Linux Priority (-16 is very high, but slightly less aggressive than -20)
-            if (setpriority(PRIO_PROCESS, 0, -16) == 0) {
-                LOGI("[Performance] Thread Priority set to -16");
-            }
-            perfSet = true;
-        }
-
-        auto startTime = std::chrono::high_resolution_clock::now();
         float *output = static_cast<float *>(audioData);
         int32_t totalSamplesNeeded = numFrames * CHANNELS;
         memset(output, 0, totalSamplesNeeded * sizeof(float));
 
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
-        // --- CATCH-UP LOGIC ---
-        // RESTORED to +1 for minimal latency
-        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 1)) { 
-            LOGI("[Jitter] Drop Packet (Buffer Overflow): Seq %llu, Size: %zu", mJitterBuffer.begin()->first, mJitterBuffer.size());
-            mJitterBuffer.erase(mJitterBuffer.begin());
-            mExpectedSeq++;
-        }
+        // Use user-defined buffering target (in packets, 1 packet = 20ms = 960 samples * 2 channels)
+        size_t samplesTarget = (size_t)mTargetBufferSize * 1920;
 
         if (mIsBuffering) {
-            if (mJitterBuffer.size() >= (size_t)mTargetBufferSize) {
+            if (mPcmBuffer.size() >= samplesTarget) {
                 mIsBuffering = false;
-                LOGI("[Jitter] Buffering Complete. Starting playback.");
+                LOGI("[Jitter] Buffering Complete. PCM: %zu", mPcmBuffer.size());
             } else return oboe::DataCallbackResult::Continue;
         }
 
-        int packetsDecodedThisTurn = 0;
-        while (mDecodedPcmBuffer.size() < (size_t)totalSamplesNeeded) {
-            if (mJitterBuffer.empty()) break;
-
-            auto it = mJitterBuffer.begin();
-            uint64_t currentSeq = it->first;
-            
-            if (mFirstPacket) { mExpectedSeq = currentSeq; mFirstPacket = false; }
-
-            // 嚴重跳號檢查
-            if (currentSeq > mExpectedSeq + 200) { 
-                LOGI("[Jitter] Hard Reset: Large Jump (%llu -> %llu)", mExpectedSeq, currentSeq);
-                mExpectedSeq = currentSeq; 
-                mDecodedPcmBuffer.clear();
-            }
-
-            if (currentSeq > mExpectedSeq) {
-                // PLC
-                float decodeOut[MAX_FRAME_SIZE * CHANNELS];
-                int decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
-                if (decoded > 0) {
-                    mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
-                    mExpectedSeq++;
-                    mPlcCount++;
-                }
-                continue;
-            } else if (currentSeq < mExpectedSeq) {
-                mJitterBuffer.erase(it);
-                continue;
-            }
-
-            float decodeOut[MAX_FRAME_SIZE * CHANNELS];
-            auto dStart = std::chrono::high_resolution_clock::now();
-            int decoded = opus_decode_float(mOpusDecoder, it->second.data(), it->second.size(), decodeOut, MAX_FRAME_SIZE, 0);
-            auto dEnd = std::chrono::high_resolution_clock::now();
-            auto dDuration = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
-            
-            if (dDuration > 5000) {
-                LOGI("[Performance] High Decode Time: %lld us (Core: %d)", dDuration, sched_getcpu());
-            }
-
-            if (decoded > 0) {
-                mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
-                packetsDecodedThisTurn++;
-            }
-            mExpectedSeq++;
-            mJitterBuffer.erase(it);
-        }
-
-        if (!mDecodedPcmBuffer.empty()) {
-            size_t toCopy = std::min((size_t)totalSamplesNeeded, mDecodedPcmBuffer.size());
-            memcpy(output, mDecodedPcmBuffer.data(), toCopy * sizeof(float));
-            mDecodedPcmBuffer.erase(mDecodedPcmBuffer.begin(), mDecodedPcmBuffer.begin() + toCopy);
+        if (!mPcmBuffer.empty()) {
+            size_t toCopy = std::min((size_t)totalSamplesNeeded, mPcmBuffer.size());
+            memcpy(output, mPcmBuffer.data(), toCopy * sizeof(float));
+            mPcmBuffer.erase(mPcmBuffer.begin(), mPcmBuffer.begin() + toCopy);
         } else {
-            // Underrun
-            LOGI("[Jitter] Underrun: Buffer empty during callback.");
             mIsBuffering = true;
-        }
-
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto totalDuration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
-        
-        if (totalDuration > 15000) { // Callback > 15ms (Total turn is 20ms)
-            LOGI("[Performance] CRITICAL: Callback took %lld us (Core: %d)", totalDuration, sched_getcpu());
         }
         
         return oboe::DataCallbackResult::Continue;
     }
 
-    void setBufferSize(int size) {
-        mTargetBufferSize = size;
-        {
-            std::lock_guard<std::mutex> lock(mStreamMutex);
-            if (mStream) {
-                // Set system buffer to 2 * burst size (typical for low latency)
-                // or match our jitter buffer size in frames
-                int32_t framesPerPacket = 960; 
-                mStream->setBufferSizeInFrames(size * framesPerPacket);
+    // --- PRODUCER: DECODE THREAD ---
+    void decodeLoop() {
+        setpriority(PRIO_PROCESS, 0, -16);
+        LOGI("[Performance] Decode Worker Thread Started.");
+        
+        while (mIsRunning) {
+            std::unique_lock<std::mutex> lock(mBufferMutex);
+            mDecodeCV.wait_for(lock, std::chrono::milliseconds(50), [this] {
+                return !mIsRunning || !mJitterBuffer.empty();
+            });
+
+            if (!mIsRunning) break;
+            if (mJitterBuffer.empty()) continue;
+
+            // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
+            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
+                if (!mJitterBuffer.empty()) {
+                    mJitterBuffer.erase(mJitterBuffer.begin());
+                    mExpectedSeq++;
+                } else break;
+            }
+
+            if (mJitterBuffer.empty()) continue;
+
+            auto it = mJitterBuffer.begin();
+            uint64_t currentSeq = it->first;
+            if (mFirstPacket) { mExpectedSeq = currentSeq; mFirstPacket = false; }
+
+            if (currentSeq > mExpectedSeq + 100) {
+                mExpectedSeq = currentSeq;
+                mPcmBuffer.clear();
+            }
+
+            float decodeOut[MAX_FRAME_SIZE * CHANNELS];
+            int decoded = 0;
+
+            if (currentSeq > mExpectedSeq) {
+                decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
+                if (decoded > 0) mPlcCount++;
+                mExpectedSeq++;
+            } else if (currentSeq < mExpectedSeq) {
+                mJitterBuffer.erase(it);
+                continue;
+            } else {
+                auto dStart = std::chrono::high_resolution_clock::now();
+                decoded = opus_decode_float(mOpusDecoder, it->second.data(), it->second.size(), decodeOut, MAX_FRAME_SIZE, 0);
+                auto dEnd = std::chrono::high_resolution_clock::now();
+                auto dUs = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
+                
+                if (dUs > 5000) {
+                    LOGI("[Performance] Worker High Decode Time: %lld us (Core: %d)", dUs, sched_getcpu());
+                }
+
+                mExpectedSeq++;
+                mJitterBuffer.erase(it);
+            }
+
+            if (decoded > 0) {
+                mPcmBuffer.insert(mPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
             }
         }
+        LOGI("[Performance] Decode Worker Thread Stopped.");
+    }
+
+    void setBufferSize(int size) {
+        mTargetBufferSize = size;
         resetInternal();
     }
 
-    int getBufferDepth() { std::lock_guard<std::mutex> lock(mBufferMutex); return (int)mJitterBuffer.size(); }
+    int getBufferDepth() { 
+        std::lock_guard<std::mutex> lock(mBufferMutex); 
+        return (int)((mJitterBuffer.size() * 1920 + mPcmBuffer.size()) / 1920); 
+    }
     int getPLCCount() { return mPlcCount.exchange(0); }
 
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
         mJitterBuffer[seq] = std::vector<uint8_t>(data, data + len);
-        if (mJitterBuffer.size() > 100) mJitterBuffer.erase(mJitterBuffer.begin());
+        if (mJitterBuffer.size() > 50) mJitterBuffer.erase(mJitterBuffer.begin());
+        mDecodeCV.notify_one();
     }
 
 private:
     std::shared_ptr<oboe::AudioStream> mStream;
     std::mutex mStreamMutex;
     std::map<uint64_t, std::vector<uint8_t>> mJitterBuffer;
-    std::vector<float> mDecodedPcmBuffer;
+    std::vector<float> mPcmBuffer;
     std::mutex mBufferMutex;
+    std::condition_variable mDecodeCV;
+    std::thread mDecodeThread;
+    std::atomic<bool> mIsRunning{false};
     OpusDecoder *mOpusDecoder = nullptr;
     bool mIsBuffering = true;
     int mTargetBufferSize = 5;
@@ -248,15 +228,7 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_writeToNative
         memcpy(&seq, buffer, 8);
         if (length > 16) {
             gAudioEngine.pushPacket(seq, reinterpret_cast<const uint8_t*>(buffer + 16), (int)length - 16);
-            // Log periodically or on large gaps? 
-            // Let's log every 100 packets to verify throughput without spamming
-            static int pCount = 0;
-            if (++pCount % 100 == 0) {
-                // LOGI("[Network] Received 100 packets. Last Seq: %llu", seq);
-            }
         }
-    } else {
-        LOGI("[Network] CRITICAL: Received tiny packet, length: %d", length);
     }
     env->ReleaseByteArrayElements(data, buffer, JNI_ABORT);
 }
