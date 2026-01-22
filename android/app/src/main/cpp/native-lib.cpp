@@ -119,58 +119,73 @@ public:
         LOGI("[Performance] Decode Worker Thread Started.");
         
         while (mIsRunning) {
-            std::unique_lock<std::mutex> lock(mBufferMutex);
-            mDecodeCV.wait_for(lock, std::chrono::milliseconds(50), [this] {
-                return !mIsRunning || !mJitterBuffer.empty();
-            });
+            uint64_t currentSeq = 0;
+            std::vector<uint8_t> opusData;
+            bool isPlc = false;
 
-            if (!mIsRunning) break;
-            if (mJitterBuffer.empty()) continue;
+            {
+                std::unique_lock<std::mutex> lock(mBufferMutex);
+                
+                // Wait for packets
+                mDecodeCV.wait_for(lock, std::chrono::milliseconds(50), [this] {
+                    return !mIsRunning || !mJitterBuffer.empty();
+                });
 
-            // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
-            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
-                if (!mJitterBuffer.empty()) {
-                    mJitterBuffer.erase(mJitterBuffer.begin());
+                if (!mIsRunning) break;
+                if (mJitterBuffer.empty()) continue;
+
+                // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
+                while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
+                    if (!mJitterBuffer.empty()) {
+                        mJitterBuffer.erase(mJitterBuffer.begin());
+                        mExpectedSeq++;
+                    } else break;
+                }
+
+                if (mJitterBuffer.empty()) continue;
+
+                auto it = mJitterBuffer.begin();
+                currentSeq = it->first;
+                if (mFirstPacket) { mExpectedSeq = currentSeq; mFirstPacket = false; }
+
+                if (currentSeq > mExpectedSeq + 100) {
+                    mExpectedSeq = currentSeq;
+                    mPcmBuffer.clear();
+                }
+
+                if (currentSeq > mExpectedSeq) {
+                    isPlc = true;
                     mExpectedSeq++;
-                } else break;
-            }
-
-            if (mJitterBuffer.empty()) continue;
-
-            auto it = mJitterBuffer.begin();
-            uint64_t currentSeq = it->first;
-            if (mFirstPacket) { mExpectedSeq = currentSeq; mFirstPacket = false; }
-
-            if (currentSeq > mExpectedSeq + 100) {
-                mExpectedSeq = currentSeq;
-                mPcmBuffer.clear();
-            }
+                } else if (currentSeq < mExpectedSeq) {
+                    mJitterBuffer.erase(it);
+                    continue;
+                } else {
+                    // Normal case: pop the packet to decode it outside the lock
+                    opusData = std::move(it->second);
+                    mJitterBuffer.erase(it);
+                    mExpectedSeq++;
+                }
+            } // MUTEX UNLOCKED HERE
 
             float decodeOut[MAX_FRAME_SIZE * CHANNELS];
             int decoded = 0;
 
-            if (currentSeq > mExpectedSeq) {
+            if (isPlc) {
                 decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
                 if (decoded > 0) mPlcCount++;
-                mExpectedSeq++;
-            } else if (currentSeq < mExpectedSeq) {
-                mJitterBuffer.erase(it);
-                continue;
-            } else {
+            } else if (!opusData.empty()) {
                 auto dStart = std::chrono::high_resolution_clock::now();
-                decoded = opus_decode_float(mOpusDecoder, it->second.data(), it->second.size(), decodeOut, MAX_FRAME_SIZE, 0);
+                decoded = opus_decode_float(mOpusDecoder, opusData.data(), opusData.size(), decodeOut, MAX_FRAME_SIZE, 0);
                 auto dEnd = std::chrono::high_resolution_clock::now();
                 auto dUs = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
                 
                 if (dUs > 5000) {
                     LOGI("[Performance] Worker High Decode Time: %lld us (Core: %d)", dUs, sched_getcpu());
                 }
-
-                mExpectedSeq++;
-                mJitterBuffer.erase(it);
             }
 
             if (decoded > 0) {
+                std::lock_guard<std::mutex> lock(mBufferMutex);
                 mPcmBuffer.insert(mPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
             }
         }
