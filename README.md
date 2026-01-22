@@ -36,6 +36,10 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
     *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **MediaStyle Notification**.
+*   **High Performance Architecture**:
+    *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
+    *   **PCM FIFO Buffer**: Uses a thread-safe circular buffer to absorb system-level performance jitter.
+    *   **Oboe Exclusive Mode**: Direct hardware access for the lowest possible round-trip latency.
 *   **Smart Persistence**: Automatically remembers your last used Latency Preset.
 *   **Battery Optimization**: Proactively requests exemption to ensure glitch-free audio in background.
 *   **Ultra-Low Latency (Pulse Architecture)**: 
