@@ -12,14 +12,21 @@ android {
     def date = new Date()
     def autoVersionCode = Integer.parseInt(date.format('yyMMddHH'))
 
+    // 確保 Keystore 存在
+    def keystoreFile = file('debug.keystore')
+    if (!keystoreFile.exists()) {
+        println "Generating debug.keystore..."
+        ant.genkey(alias: 'androiddebugkey', storepass: 'android', keypass: 'android', keystore: keystoreFile, dname: 'CN=Android Debug,O=Android,C=US', validity: 10000, keyalg: 'RSA', keysize: 2048, storetype: 'pkcs12')
+    }
+
     signingConfigs {
         config {
             // 注意：為了確保在不同電腦建置的 APK 可以互相覆蓋安裝，
             // 建議將 debug.keystore 放在 android/app/ 目錄下。
-            // 如果不存在，則會嘗試使用系統預設路徑。
+            // 腳本已設定為若不存在則自動生成。
             keyAlias 'androiddebugkey'
             keyPassword 'android'
-            storeFile file('debug.keystore').exists() ? file('debug.keystore') : file("${System.getProperty('user.home')}/.android/debug.keystore")
+            storeFile keystoreFile
             storePassword 'android'
         }
     }
