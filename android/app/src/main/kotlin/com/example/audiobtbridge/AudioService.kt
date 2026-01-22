@@ -114,10 +114,13 @@ class AudioService : Service() {
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (BluetoothDevice.ACTION_ACL_DISCONNECTED == intent?.action) {
-                // Check if we should stop based on connection status (using ConnectionManager logic)
-                if (connectionManager.shouldStopOnBluetoothDisconnect(serverAddress != null, false)) {
-                    log("Bluetooth Disconnected. Stopping Stream & Service...")
+            val action = intent?.action
+            if (BluetoothDevice.ACTION_ACL_DISCONNECTED == action || AudioManager.ACTION_AUDIO_BECOMING_NOISY == action) {
+                if (serverAddress != null) {
+                    log("Audio Device Disconnected. Terminating Connection...")
+                    // 1. Send Goodbye immediately
+                    sendGoodbyeToServer()
+                    // 2. Stop Service
                     stopSelf()
                 }
             }
@@ -130,8 +133,12 @@ class AudioService : Service() {
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
         
-        // Register Bluetooth monitor
-        registerReceiver(bluetoothReceiver, IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED))
+        // Register Bluetooth and Audio Noisy monitors
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        }
+        registerReceiver(bluetoothReceiver, filter)
         
         // Listen for audio device changes
 
@@ -160,8 +167,7 @@ class AudioService : Service() {
         when (intent?.action) {
             ACTION_START -> if (!isRunning) startAudioService()
             ACTION_STOP -> {
-                isRunning = false
-                serverAddress = null
+                // Do not clear serverAddress here, as it's needed by sendGoodbyeToServer() in onDestroy()
                 stopSelf()
             }
             ACTION_UPDATE_MODE -> {
