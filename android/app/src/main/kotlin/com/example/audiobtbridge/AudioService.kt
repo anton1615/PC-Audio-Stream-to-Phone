@@ -258,6 +258,7 @@ class AudioService : Service() {
         // Receiver Loop
                 var duplicateCount = 0
                 var lastLogTime = 0L
+                var lastReceivedSeq = -1L
 
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -286,6 +287,7 @@ class AudioService : Service() {
                                 log("Server Found: ${packet.address}")
                                 NativeBridge.resetAudio()
                                 connectionManager.reset()
+                                lastReceivedSeq = -1L // Reset tracker
                                 sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
                                 lastAudioTime = System.currentTimeMillis()
                                 configRetryCount = 0
@@ -298,10 +300,14 @@ class AudioService : Service() {
                             if (len > 26) { // Prefix(10) + Seq(8) + TS(8)
                                 // Redundancy Check
                                 val seq = ByteBuffer.wrap(data, 10, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                                
+                                if (lastReceivedSeq != -1L && seq > lastReceivedSeq + 1) {
+                                    Log.w("AS2P_Diag", "[Network] Gap: ${lastReceivedSeq + 1} to ${seq - 1}")
+                                }
+                                lastReceivedSeq = seq
+
                                 if (connectionManager.isDuplicate(seq)) {
                                     duplicateCount++
-                                    // LOGI equivalent in Kotlin for high-frequency events if needed, 
-                                    // but let's stick to total count every 2s to avoid overwhelming logcat
                                 }
 
                                 val now = System.currentTimeMillis()

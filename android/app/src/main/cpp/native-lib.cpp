@@ -179,8 +179,9 @@ public:
                 auto dEnd = std::chrono::high_resolution_clock::now();
                 auto dUs = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
                 
-                if (dUs > 5000) {
-                    LOGI("[Performance] Worker High Decode Time: %lld us (Core: %d)", dUs, sched_getcpu());
+                // Increase threshold to 12ms to clear the screen from minor spikes
+                if (dUs > 12000) {
+                    LOGI("[Performance] CRITICAL Decode Time: %lld us (Core: %d)", dUs, sched_getcpu());
                 }
             }
 
@@ -207,8 +208,7 @@ public:
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
         if (mJitterBuffer.count(seq) > 0) {
-            // This shouldn't happen often if Kotlin's connectionManager.isDuplicate is working
-            // LOGI("[Network] Duplicate packet bypassed Kotlin: Seq %llu", seq);
+            __android_log_print(ANDROID_LOG_DEBUG, "AS2P_Native", "[Network] Duplicate Seq: %llu (Redundancy Hit)", seq);
         }
         mJitterBuffer[seq] = std::vector<uint8_t>(data, data + len);
         if (mJitterBuffer.size() > 50) mJitterBuffer.erase(mJitterBuffer.begin());
