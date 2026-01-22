@@ -16,4 +16,8 @@ class ConnectionManager {
     fun reset() {
         lastSequence = -1
     }
+
+    fun shouldStopOnBluetoothDisconnect(isConnected: Boolean, isBluetoothConnected: Boolean): Boolean {
+        return isConnected && !isBluetoothConnected
+    }
 }

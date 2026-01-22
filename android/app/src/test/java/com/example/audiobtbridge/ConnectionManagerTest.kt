@@ -32,4 +32,22 @@ class ConnectionManagerTest {
         assertTrue(manager.isDuplicate(100L))  // Second time: duplicate
         assertFalse(manager.isDuplicate(101L)) // New sequence: not a duplicate
     }
+
+    @Test
+    fun `should signal stop when Bluetooth disconnects`() {
+        val manager = ConnectionManager()
+        assertTrue(manager.shouldStopOnBluetoothDisconnect(isConnected = true, isBluetoothConnected = false))
+    }
+
+    @Test
+    fun `should NOT signal stop when Bluetooth connects`() {
+        val manager = ConnectionManager()
+        assertFalse(manager.shouldStopOnBluetoothDisconnect(isConnected = true, isBluetoothConnected = true))
+    }
+
+    @Test
+    fun `should NOT signal stop when not streaming`() {
+        val manager = ConnectionManager()
+        assertFalse(manager.shouldStopOnBluetoothDisconnect(isConnected = false, isBluetoothConnected = false))
+    }
 }

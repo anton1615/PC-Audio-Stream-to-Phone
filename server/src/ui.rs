@@ -16,7 +16,7 @@ slint::slint! {
         in property <string> packets_text: "0 packets";
         in property <string> client_text: "None";
         in property <int> refresh_counter: 0;
-        in-out property <bool> redundancy_enabled: true;
+        in-out property <bool> redundancy_enabled: false;
         in-out property <bool> startup_enabled: false;
 
         callback toggle_server();

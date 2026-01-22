@@ -27,12 +27,12 @@ class LatencyManager {
                 complexity = 8
             )
             LatencyMode.HIGH_QUALITY -> AudioConfig(
-                bufferSize = 7,     // ~140ms
+                bufferSize = 6,     // ~120ms
                 bitrate = 256000,
                 complexity = 10
             )
             LatencyMode.BEST_QUALITY -> AudioConfig(
-                bufferSize = 10,     // ~200ms
+                bufferSize = 8,     // ~160ms
                 bitrate = 320000,    // Transparent
                 complexity = 10
             )

@@ -66,7 +66,15 @@ class AudioService : Service() {
 
         fun log(msg: String) {
             Log.i("AS2P_Service", msg)
-            serviceInstance?.updateNotification(msg)
+            // Only update notification for non-stats messages to avoid spamming the UI with detailed logs
+            // unless it is a state change we want to show.
+            if (!msg.startsWith("[Stats]")) {
+                serviceInstance?.updateNotification(msg)
+            }
+        }
+
+        fun updateNotificationState(content: String) {
+            serviceInstance?.updateNotification(content)
         }
     }
 
@@ -81,15 +89,24 @@ class AudioService : Service() {
         val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
+        // Clean up content text: Remove Redundancy/PLC/Stats info
+        // Format: "[Preset] - [Status]"
+        val cleanContent = if (content.contains("Redundancy")) {
+            val modeName = _latencyModeFlow.value.name.replace("_", " ")
+            "$modeName - Streaming"
+        } else {
+            content
+        }
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AS2P Audio Bridge")
-            .setContentText(content)
+            .setContentText(cleanContent)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, android.R.drawable.ic_media_play))
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(isRunning) // 只有在運行時才常駐
             .setStyle(mediaStyle)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stopPendingIntent)
             .build()
 
         nm.notify(1, notification)
@@ -98,8 +115,11 @@ class AudioService : Service() {
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (BluetoothDevice.ACTION_ACL_DISCONNECTED == intent?.action) {
-                log("Bluetooth Disconnected. Stopping Service...")
-                stopSelf()
+                // Check if we should stop based on connection status (using ConnectionManager logic)
+                if (connectionManager.shouldStopOnBluetoothDisconnect(serverAddress != null, false)) {
+                    log("Bluetooth Disconnected. Stopping Stream & Service...")
+                    stopSelf()
+                }
             }
         }
     }
@@ -255,7 +275,12 @@ class AudioService : Service() {
                                 if (now - lastLogTime > 2000) {
                                     val plcCount = NativeBridge.getPLCCount()
                                     if (duplicateCount > 0 || plcCount > 0) {
-                                        log("[Stats] Redundancy: $duplicateCount, PLC: $plcCount (in 2s)")
+                                        // Log to Logcat only, do not update notification
+                                        Log.i("AS2P_Service", "[Stats] Redundancy: $duplicateCount, PLC: $plcCount (in 2s)")
+                                        
+                                        // Refresh notification to show "Streaming" state cleanly
+                                        val modeName = _latencyModeFlow.value.name.replace("_", " ")
+                                        updateNotificationState("$modeName - Streaming")
                                     }
                                     duplicateCount = 0
                                     lastLogTime = now
@@ -358,15 +383,19 @@ class AudioService : Service() {
 
     private fun sendGoodbyeToServer() {
         val target = serverAddress ?: return
-        serviceScope.launch(Dispatchers.IO) {
+        // Use a raw Thread to ensure it outlives the Service context
+        Thread {
             try {
                 val socket = DatagramSocket()
                 val data = "AS2P_GOODBYE".toByteArray()
-                socket.send(DatagramPacket(data, data.size, target, 12345))
+                val packet = DatagramPacket(data, data.size, target, 12345)
+                socket.send(packet)
                 socket.close()
-                log("Goodbye Sent to Server")
-            } catch (e: Exception) {}
-        }
+                Log.i("AS2P_Service", "Goodbye Sent to Server (Thread)")
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }.start()
     }
 
     override fun onDestroy() {

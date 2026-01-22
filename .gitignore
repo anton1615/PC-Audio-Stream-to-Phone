@@ -20,8 +20,6 @@ android/.gradle
 Thumbs.db
 
 # Gemini CLI
-
 conductor/
-
 .gemini-clipboard/
 .gemini_security/

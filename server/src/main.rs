@@ -121,9 +121,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // So simply setting `is_running` to true and `state` to Listening is enough for UI visual.
             // But we need to make sure the loop logic handles this.
             
-            let mut redundancy = true;
+            let mut redundancy = false;
             let mut current_bitrate = 160000;
             let mut current_complexity = 5;
+
+            // Delayed Startup (Defender Mitigation)
+            if debug_mode { println!("{} Initializing... (Delayed start)", "[SYS]".yellow()); }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
             loop {
                 match state {
@@ -141,6 +145,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if debug_mode { println!("{} Waiting for AS2P_DISCOVER...", "[CONN]".blue()); }
                         
                         let socket = Arc::new(bind_socket(12345).expect("Err"));
+                        
+                        // Flush socket buffer to prevent ghost connections
+                        let mut flush_buf = [0u8; 1024];
+                        while let Ok(_) = socket.try_recv(&mut flush_buf) {}
+
                         let mut buf = [0u8; 1024];
                         let mut target_addr: Option<std::net::SocketAddr> = None;
 
@@ -161,6 +170,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = socket.send_to(b"AS2P_OFFER", fixed_addr).await;
                                             if debug_mode { println!("{} Offer sent to {}", "[CONN]".blue(), fixed_addr); }
                                         } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
+                                            // Fix: Ensure target_addr is set if we receive CONFIG without DISCOVER (or race condition)
+                                            if target_addr.is_none() {
+                                                let fixed_addr = std::net::SocketAddr::new(addr.ip(), 12345);
+                                                target_addr = Some(fixed_addr);
+                                                if debug_mode { println!("{} Implicit connection via CONFIG from {}", "[CONN]".yellow(), fixed_addr); }
+                                            }
+
                                             let raw_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
                                             let raw_complexity = buf[15] as i32;
                                             let (valid_br, valid_comp) = validate_config(raw_bitrate, raw_complexity);
@@ -256,6 +272,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if debug_mode { println!("{} Config Applied: {}bps", "[AUDIO]".green(), current_bitrate); }
                                             } else if len >= 12 && &buf[0..12] == b"AS2P_GOODBYE" {
                                                 if debug_mode { println!("{} Client disconnected gracefully.", "[CONN]".blue()); }
+                                                // Clear UI stats immediately
+                                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
                                                 state = ServerState::Listening; break;
                                             }
                                         }
