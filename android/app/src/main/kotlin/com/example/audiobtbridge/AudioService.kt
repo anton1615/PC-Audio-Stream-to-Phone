@@ -35,7 +35,7 @@ class AudioService : Service() {
     private val latencyManager = LatencyManager()
     private val connectionManager = ConnectionManager()
     private lateinit var audioManager: AudioManager
-    private var mediaSession: mediaSession: MediaSessionCompat? = null
+    private var mediaSession: MediaSessionCompat? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
     

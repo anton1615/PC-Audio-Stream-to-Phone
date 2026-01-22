@@ -11,6 +11,7 @@
 #include <chrono>
 #include <sched.h>
 #include <unistd.h>
+#include <sys/resource.h>
 
 #define LOG_TAG "AS2P_Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -79,23 +80,20 @@ public:
     }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *audioStream, void *audioData, int32_t numFrames) override {
-        // --- THREAD AFFINITY (One-time setup for this thread) ---
-        static thread_local bool affinitySet = false;
-        if (!affinitySet) {
+        // --- THREAD PERFORMANCE SETUP (One-time) ---
+        static thread_local bool perfSet = false;
+        if (!perfSet) {
+            // 1. Thread Affinity (Big/Medium Cores)
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            // On Tensor GS101 (Pixel 6a): 4,5 are Medium, 6,7 are Big. 
-            // We target these 4 high-performance cores.
-            CPU_SET(4, &cpuset);
-            CPU_SET(5, &cpuset);
-            CPU_SET(6, &cpuset);
-            CPU_SET(7, &cpuset);
-            if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
-                LOGI("[Performance] Thread Affinity set to cores 4-7");
-            } else {
-                LOGI("[Performance] Failed to set Thread Affinity");
+            CPU_SET(4, &cpuset); CPU_SET(5, &cpuset); CPU_SET(6, &cpuset); CPU_SET(7, &cpuset);
+            sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+
+            // 2. Linux Real-time Priority (-20 is highest)
+            if (setpriority(PRIO_PROCESS, 0, -20) == 0) {
+                LOGI("[Performance] Thread Priority set to -20");
             }
-            affinitySet = true;
+            perfSet = true;
         }
 
         auto startTime = std::chrono::high_resolution_clock::now();
@@ -106,8 +104,8 @@ public:
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
         // --- CATCH-UP LOGIC ---
-        // Increase slack to +10 to avoid aggressive dropping during background CPU spikes
-        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 10)) { 
+        // REVERTED to +2 for minimal latency
+        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 2)) { 
             LOGI("[Jitter] Drop Packet (Buffer Overflow): Seq %llu, Size: %zu", mJitterBuffer.begin()->first, mJitterBuffer.size());
             mJitterBuffer.erase(mJitterBuffer.begin());
             mExpectedSeq++;
@@ -147,7 +145,6 @@ public:
                 }
                 continue;
             } else if (currentSeq < mExpectedSeq) {
-                // 收到過期封包
                 mJitterBuffer.erase(it);
                 continue;
             }
@@ -158,9 +155,8 @@ public:
             auto dEnd = std::chrono::high_resolution_clock::now();
             auto dDuration = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
             
-            // 如果解碼時間異常（例如 > 5ms），則記錄
             if (dDuration > 5000) {
-                LOGI("[Performance] High Decode Time: %lld us", dDuration);
+                LOGI("[Performance] High Decode Time: %lld us (Core: %d)", dDuration, sched_getcpu());
             }
 
             if (decoded > 0) {
