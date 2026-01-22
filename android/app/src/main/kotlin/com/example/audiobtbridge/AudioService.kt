@@ -275,6 +275,7 @@ class AudioService : Service() {
                         if (len >= 10 && String(data, 0, 10) == "AS2P_OFFER") {
                             if (serverAddress == null) {
                                 serverAddress = packet.address
+                                Log.i("AS2P_Diag", "[Conn] Server Address set to: ${packet.address}")
                                 _isSearchingFlow.value = false
                                 mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f).build())
                                 log("Server Found: ${packet.address}")

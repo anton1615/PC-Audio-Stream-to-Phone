@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut last_ui_update_time = std::time::Instant::now();
 
                             // 0. Initial Warm-up Packets
-                            if debug_mode { println!("{} Sending initial 10 warm-up packets...", "[AUDIO]".green()); }
+                            if debug_mode { println!("{} Sending initial 10 warm-up packets to {}", "[AUDIO]".green(), target); }
                             let silence_pcm = vec![0.0f32; 1920];
                             let silence_data = encode_frame(&mut encoder, &silence_pcm);
                             for _ in 0..10 {
@@ -211,6 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
                                 sequence += 1;
                             }
+
+                            let mut last_throughput_log = std::time::Instant::now();
 
                             loop {
                                 tokio::select! {
@@ -228,39 +230,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Ok((len, _)) = result {
                                             last_activity_time = std::time::Instant::now();
                                             if len >= 10 && &buf[0..10] == b"AS2P_ALIVE" {
-                                                // Heartbeat received, activity time updated above
                                                 continue;
                                             } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
                                                 let raw_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
                                                 let raw_complexity = buf[15] as i32;
                                                 let (valid_bitrate, valid_complexity) = validate_config(raw_bitrate, raw_complexity);
 
+                                                if debug_mode { println!("{} Received CONFIG: {}bps, Cmp: {}", "[AUDIO]".blue(), valid_bitrate, valid_complexity); }
+
                                                 if valid_bitrate == current_bitrate && valid_complexity == current_complexity {
-                                                    if debug_mode { println!("{} Received redundant or out-of-range config (clamped to same), ignoring.", "[AUDIO]".blue()); }
                                                     continue;
                                                 }
 
                                                 // Hot-reload config
-                                                if debug_mode { println!("{} Hot-reloading config ({}bps)...", "[AUDIO]".green(), valid_bitrate); }
+                                                if debug_mode { println!("{} Re-configuring encoder to {}bps...", "[AUDIO]".green(), valid_bitrate); }
                                                 
                                                 current_bitrate = valid_bitrate;
                                                 current_complexity = valid_complexity;
                                                 
-                                                // 2. Fade-out
                                                 capturer.start_fade_out();
                                                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                                                 
-                                                // 3. Re-create Encoder & Reset Capturer (Implicit Fade-in)
                                                 encoder = create_encoder().expect("Err");
                                                 let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
-                                                let _ = capturer.reinitialize(); // This resets fader to 0 and fades in to 1
+                                                let _ = capturer.reinitialize();
                                                 
-                                                // 4. Reset Buffer
                                                 pcm_buffer.clear();
-                                                sequence = 0; // Optional: Resetting seq might cause jump on client, but Config implies restart
-                                                
-                                                // 5. Warm-up Packets (10 silent frames)
-                                                if debug_mode { println!("{} Sending 10 warm-up packets...", "[AUDIO]".green()); }
+                                                // sequence = 0; // Not resetting sequence to avoid client jump
+
                                                 let silence_pcm = vec![0.0f32; 1920];
                                                 let silence_data = encode_frame(&mut encoder, &silence_pcm);
                                                 for _ in 0..10 {
@@ -268,11 +265,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
                                                     sequence += 1;
                                                 }
-
-                                                if debug_mode { println!("{} Config Applied: {}bps", "[AUDIO]".green(), current_bitrate); }
                                             } else if len >= 12 && &buf[0..12] == b"AS2P_GOODBYE" {
                                                 if debug_mode { println!("{} Client disconnected gracefully.", "[CONN]".blue()); }
-                                                // Clear UI stats immediately
                                                 let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
                                                 state = ServerState::Listening; break;
                                             }
@@ -295,6 +289,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 });
                                             }
                                             last_ui_update_time = std::time::Instant::now();
+                                        }
+
+                                        // Throughput Diagnostic Log (Every 1s)
+                                        if debug_mode && last_throughput_log.elapsed().as_secs() >= 1 {
+                                            println!("{} Streaming: Seq={}, Target={}", "[DIAG]".bright_black(), sequence, target);
+                                            last_throughput_log = std::time::Instant::now();
                                         }
 
                                         for _ in 0..10 {

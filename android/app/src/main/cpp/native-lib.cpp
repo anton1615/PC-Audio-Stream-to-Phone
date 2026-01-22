@@ -77,6 +77,7 @@ public:
     }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *audioStream, void *audioData, int32_t numFrames) override {
+        auto startTime = std::chrono::high_resolution_clock::now();
         float *output = static_cast<float *>(audioData);
         int32_t totalSamplesNeeded = numFrames * CHANNELS;
         memset(output, 0, totalSamplesNeeded * sizeof(float));
@@ -84,17 +85,20 @@ public:
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
         // --- CATCH-UP LOGIC ---
-        // If buffer is building up beyond target + 1, drop oldest to maintain low latency
-        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 1)) {
+        while (mJitterBuffer.size() > (size_t)(mTargetBufferSize + 2)) { // Allow a bit more slack
+            LOGI("[Jitter] Drop Packet (Buffer Overflow): Seq %llu, Size: %zu", mJitterBuffer.begin()->first, mJitterBuffer.size());
             mJitterBuffer.erase(mJitterBuffer.begin());
-            mExpectedSeq++; // Keep expected seq in sync
+            mExpectedSeq++;
         }
 
         if (mIsBuffering) {
-            if (mJitterBuffer.size() >= (size_t)mTargetBufferSize) mIsBuffering = false;
-            else return oboe::DataCallbackResult::Continue;
+            if (mJitterBuffer.size() >= (size_t)mTargetBufferSize) {
+                mIsBuffering = false;
+                LOGI("[Jitter] Buffering Complete. Starting playback.");
+            } else return oboe::DataCallbackResult::Continue;
         }
 
+        int packetsDecodedThisTurn = 0;
         while (mDecodedPcmBuffer.size() < (size_t)totalSamplesNeeded) {
             if (mJitterBuffer.empty()) break;
 
@@ -103,14 +107,15 @@ public:
             
             if (mFirstPacket) { mExpectedSeq = currentSeq; mFirstPacket = false; }
 
-            // 嚴格對齊，不符合預期的序號直接跳過（防止機械音）
-            if (currentSeq > mExpectedSeq + 100) { 
+            // 嚴重跳號檢查
+            if (currentSeq > mExpectedSeq + 200) { 
+                LOGI("[Jitter] Hard Reset: Large Jump (%llu -> %llu)", mExpectedSeq, currentSeq);
                 mExpectedSeq = currentSeq; 
                 mDecodedPcmBuffer.clear();
             }
 
             if (currentSeq > mExpectedSeq) {
-                // PLC: 丟包補償（解碼空數據）
+                // PLC
                 float decodeOut[MAX_FRAME_SIZE * CHANNELS];
                 int decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
                 if (decoded > 0) {
@@ -120,20 +125,25 @@ public:
                 }
                 continue;
             } else if (currentSeq < mExpectedSeq) {
+                // 收到過期封包
                 mJitterBuffer.erase(it);
                 continue;
             }
 
             float decodeOut[MAX_FRAME_SIZE * CHANNELS];
+            auto dStart = std::chrono::high_resolution_clock::now();
             int decoded = opus_decode_float(mOpusDecoder, it->second.data(), it->second.size(), decodeOut, MAX_FRAME_SIZE, 0);
+            auto dEnd = std::chrono::high_resolution_clock::now();
+            auto dDuration = std::chrono::duration_cast<std::chrono::microseconds>(dEnd - dStart).count();
+            
+            // 如果解碼時間異常（例如 > 5ms），則記錄
+            if (dDuration > 5000) {
+                LOGI("[Performance] High Decode Time: %lld us", dDuration);
+            }
+
             if (decoded > 0) {
                 mDecodedPcmBuffer.insert(mDecodedPcmBuffer.end(), decodeOut, decodeOut + (decoded * CHANNELS));
-            } else if (decoded < 0) {
-                static int lastErr = 0;
-                if (decoded != lastErr) {
-                    __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "Opus Decode Error: %d", decoded);
-                    lastErr = decoded;
-                }
+                packetsDecodedThisTurn++;
             }
             mExpectedSeq++;
             mJitterBuffer.erase(it);
@@ -143,6 +153,16 @@ public:
             size_t toCopy = std::min((size_t)totalSamplesNeeded, mDecodedPcmBuffer.size());
             memcpy(output, mDecodedPcmBuffer.data(), toCopy * sizeof(float));
             mDecodedPcmBuffer.erase(mDecodedPcmBuffer.begin(), mDecodedPcmBuffer.begin() + toCopy);
+        } else {
+            // Underrun
+            LOGI("[Jitter] Underrun: Buffer empty during callback.");
+            mIsBuffering = true;
+        }
+
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto totalDuration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+        if (totalDuration > 15000) { // Callback > 15ms (Total turn is 20ms)
+            LOGI("[Performance] CRITICAL: Callback took %lld us", totalDuration);
         }
         
         return oboe::DataCallbackResult::Continue;
@@ -195,40 +215,21 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setBufferSize
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) { return gAudioEngine.getBufferDepth(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) { return gAudioEngine.getPLCCount(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_writeToNativeBuffer(JNIEnv *env, jobject thiz, jbyteArray data, jint length) {
-    // V8 Protocol: AS2P_AUDIO(10) + SEQ(8) + TS(8) + PAYLOAD
-    // Kotlin layer strips the prefix (26 bytes) and just sends SEQ(8) + TS(8) + PAYLOAD... wait.
-    // In AudioService.kt we decided: 
-    // "if (len > 26) { ... System.arraycopy(data, 26, payload, 0, payloadSize) ... NativeBridge.writeToNativeBuffer(payload) }"
-    // BUT wait, if we stripped 26 bytes, then the payload passed here is JUST the Opus data!
-    // We lost the Sequence Number if we strip 26 bytes. 
-    // The prefix is 10 bytes ("AS2P_AUDIO").
-    // Then 8 bytes Seq, 8 bytes TS.
-    // If we strip 26 bytes in Kotlin, we strip Seq and TS too.
-    
-    // Correct Logic for AudioService.kt was:
-    // Strip only "AS2P_AUDIO" (10 bytes).
-    // Let's re-read AudioService.kt logic I just wrote:
-    // "if (len > 26) { val payloadSize = len - 26 ... System.arraycopy(data, 26, payload..."
-    // ERROR: I implemented it to strip Seq and TS in Kotlin. That's bad.
-    
-    // CORRECTION STRATEGY:
-    // I will modify this C++ function to assume the input is [Seq(8) + TS(8) + OpusData].
-    // I need to go back and fix AudioService.kt to only strip the first 10 bytes (AS2P_AUDIO).
-    // Or, I can adapt this C++ to receive the FULL packet and do the parsing here, which is safer.
-    
-    // Let's assume for this step that AudioService PASSES everything starting from Seq.
-    // So AudioService should strip 10 bytes.
-    // I will fix AudioService in the NEXT turn.
-    // Here, I will implement expecting [Seq(8) + TS(8) + Opus].
-    
     jbyte* buffer = env->GetByteArrayElements(data, nullptr);
-    if (length >= 16) { // Seq(8) + TS(8)
+    if (length >= 16) { 
         uint64_t seq = 0;
         memcpy(&seq, buffer, 8);
-        // Skip TS (next 8 bytes), so data starts at offset 16
         if (length > 16) {
             gAudioEngine.pushPacket(seq, reinterpret_cast<const uint8_t*>(buffer + 16), (int)length - 16);
+            // Log periodically or on large gaps? 
+            // Let's log every 100 packets to verify throughput without spamming
+            static int pCount = 0;
+            if (++pCount % 100 == 0) {
+                // LOGI("[Network] Received 100 packets. Last Seq: %llu", seq);
+            }
         }
+    } else {
+        LOGI("[Network] CRITICAL: Received tiny packet, length: %d", length);
     }
     env->ReleaseByteArrayElements(data, buffer, JNI_ABORT);
 }
