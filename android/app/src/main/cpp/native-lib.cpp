@@ -44,8 +44,10 @@ public:
         mFirstPacket = true;
         mExpectedSeq = 0;
         mPlcCount = 0;
+        mLastResetTime = std::chrono::steady_clock::now();
         if (mOpusDecoder) opus_decoder_ctl(mOpusDecoder, OPUS_RESET_STATE);
-        LOGI(">>> ENGINE RESET <<<");
+        mDecodeCV.notify_all(); // Wake up worker to acknowledge reset
+        LOGI(">>> ENGINE RESET (Atomic & Synced) <<<");
     }
 
     void start() {
@@ -134,9 +136,13 @@ public:
                             if (!mIsRunning) break;
                             if (mJitterBuffer.empty()) continue;
                 
-                            // Catch-up: Keep total latency (Jitter + PCM) at Target + 2
-                            // Increased to +2 to allow better tolerance for bursty network arrival
-                            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 2)) {
+                                            // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
+                
+                                            // Reverted to +1 for minimal latency as per user request
+                
+                                            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
+                
+                            
                                 if (!mJitterBuffer.empty()) {
                                     mJitterBuffer.erase(mJitterBuffer.begin());
                                     mExpectedSeq++;
@@ -207,6 +213,14 @@ public:
 
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
+        
+        // Cooldown: Ignore packets arriving within 100ms of a reset 
+        // to prevent sequence misalignment from stale packets.
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - mLastResetTime).count() < 100) {
+            return;
+        }
+
         mJitterBuffer[seq] = std::vector<uint8_t>(data, data + len);
         if (mJitterBuffer.size() > 50) mJitterBuffer.erase(mJitterBuffer.begin());
         mDecodeCV.notify_one();
@@ -227,6 +241,7 @@ private:
     uint64_t mExpectedSeq = 0;
     bool mFirstPacket = true;
     std::atomic<int> mPlcCount{0};
+    std::chrono::steady_clock::time_point mLastResetTime;
 };
 
 static AudioEngine gAudioEngine;

@@ -39,6 +39,7 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **High Performance Architecture**:
     *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
     *   **Fine-grained Locking**: Optimized mutex usage to prevent playback thread blocking during long decode operations.
+    *   **Atomic Reset Mechanism**: Includes a 100ms cooldown after preset switching to ensure seamless sequence synchronization.
     *   **PCM FIFO Buffer**: Uses a thread-safe circular buffer to absorb system-level performance jitter.
     *   **Oboe Exclusive Mode**: Direct hardware access for the lowest possible round-trip latency.
 *   **Smart Persistence**: Automatically remembers your last used Latency Preset.
