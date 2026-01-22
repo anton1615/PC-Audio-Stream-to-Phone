@@ -57,11 +57,6 @@ public:
         std::lock_guard<std::mutex> lock(mStreamMutex);
         if (mStream) return;
         resetInternal();
-
-        // Start Governor Tickler
-        mIsTickling = true;
-        mTicklerThread = std::thread(&AudioEngine::ticklerLoop, this);
-
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency) 
@@ -77,10 +72,6 @@ public:
 
     void stop() {
         std::lock_guard<std::mutex> lock(mStreamMutex);
-        
-        mIsTickling = false;
-        if (mTicklerThread.joinable()) mTicklerThread.join();
-
         if (mStream) { mStream->stop(); mStream->close(); mStream.reset(); }
     }
 
@@ -228,22 +219,6 @@ public:
     }
 
 private:
-    void ticklerLoop() {
-        LOGI("[Performance] Governor Tickler Started.");
-        double dummy = 1.0;
-        while (mIsTickling) {
-            // Minimal math to keep the CPU awake/active without heavy battery drain
-            for (int i = 0; i < 100; ++i) {
-                dummy = (dummy * 1.0001) + 0.0001;
-            }
-            if (dummy > 1000000.0) dummy = 1.0;
-            
-            // Sleep for 2ms to create a steady "pulse" for the scheduler
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-        LOGI("[Performance] Governor Tickler Stopped.");
-    }
-
     std::shared_ptr<oboe::AudioStream> mStream;
     std::mutex mStreamMutex;
     std::map<uint64_t, std::vector<uint8_t>> mJitterBuffer;
@@ -255,9 +230,6 @@ private:
     uint64_t mExpectedSeq = 0;
     bool mFirstPacket = true;
     std::atomic<int> mPlcCount{0};
-    
-    std::atomic<bool> mIsTickling{false};
-    std::thread mTicklerThread;
 };
 
 static AudioEngine gAudioEngine;
