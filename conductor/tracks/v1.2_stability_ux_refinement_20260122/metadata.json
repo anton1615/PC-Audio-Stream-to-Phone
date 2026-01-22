@@ -1,8 +1,0 @@
-{
-  "track_id": "v1.2_stability_ux_refinement_20260122",
-  "type": "feature",
-  "status": "new",
-  "created_at": "2026-01-22T10:13:00Z",
-  "updated_at": "2026-01-22T10:13:00Z",
-  "description": "Improve Server visibility, Android notification UX (Spotify style), APK update experience, and audio stability during preset switching."
-}
