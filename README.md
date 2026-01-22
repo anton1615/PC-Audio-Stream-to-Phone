@@ -110,6 +110,7 @@ Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALIT
 
 ## Troubleshooting
 *   **Rapid Preset Switching**: Switching presets too quickly (multiple clicks in a second) may cause the server to fall behind in reconfiguration, potentially leading to a temporary loss of audio streaming. If this happens, wait a few seconds or click **STOP** then **CONNECT** again.
+*   **Server White Background**: Occasionally, the server window may display a plain white background after running for a long period. This is a known rendering issue in the current prototype. Restarting the server or minimizing/restoring the window usually resolves it.
 *   **Microsoft Defender Warning**: On some systems, the "Run at Startup" feature might trigger a false positive in Defender. This is due to the combination of network activity and audio capture in an unsigned executable. We have implemented delayed initialization to mitigate this.
 *   **Zombie Icon**: Fixed in V8. Clicking Quit now removes the tray icon immediately.
 *   **Mechanical Noise**: Ensure Windows is set to 48kHz, though the server now resamples automatically.
