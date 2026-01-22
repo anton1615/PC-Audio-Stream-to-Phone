@@ -1,4 +1,4 @@
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 use std::sync::{Arc};
 use tokio::net::UdpSocket;
@@ -30,7 +30,7 @@ mod network;
 mod ui;
 
 use crate::audio::{AudioCapturer, CaptureEvent};
-use crate::encoder::{create_encoder, encode_frame, configure_encoder};
+use crate::encoder::{create_encoder, encode_frame, configure_encoder, validate_config};
 use crate::network::UdpSender;
 use crate::ui::{UiMessage, UiCommand, UiState, AppWindow};
 
@@ -161,8 +161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let _ = socket.send_to(b"AS2P_OFFER", fixed_addr).await;
                                             if debug_mode { println!("{} Offer sent to {}", "[CONN]".blue(), fixed_addr); }
                                         } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
-                                            current_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
-                                            current_complexity = buf[15] as i32;
+                                            let raw_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
+                                            let raw_complexity = buf[15] as i32;
+                                            let (valid_br, valid_comp) = validate_config(raw_bitrate, raw_complexity);
+                                            current_bitrate = valid_br;
+                                            current_complexity = valid_comp;
                                             state = ServerState::Streaming;
                                             break;
                                         }
@@ -183,6 +186,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut last_activity_time = std::time::Instant::now();
                             let mut last_ui_update_time = std::time::Instant::now();
 
+                            // 0. Initial Warm-up Packets
+                            if debug_mode { println!("{} Sending initial 10 warm-up packets...", "[AUDIO]".green()); }
+                            let silence_pcm = vec![0.0f32; 1920];
+                            let silence_data = encode_frame(&mut encoder, &silence_pcm);
+                            for _ in 0..10 {
+                                let ts = start_time.elapsed().as_millis() as u64;
+                                let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
+                                sequence += 1;
+                            }
+
                             loop {
                                 tokio::select! {
                                     cmd_msg = cmd_rx.recv() => {
@@ -202,19 +215,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Heartbeat received, activity time updated above
                                                 continue;
                                             } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
-                                                let new_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
-                                                let new_complexity = buf[15] as i32;
+                                                let raw_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
+                                                let raw_complexity = buf[15] as i32;
+                                                let (valid_bitrate, valid_complexity) = validate_config(raw_bitrate, raw_complexity);
 
-                                                if new_bitrate == current_bitrate && new_complexity == current_complexity {
-                                                    if debug_mode { println!("{} Received redundant config, ignoring.", "[AUDIO]".blue()); }
+                                                if valid_bitrate == current_bitrate && valid_complexity == current_complexity {
+                                                    if debug_mode { println!("{} Received redundant or out-of-range config (clamped to same), ignoring.", "[AUDIO]".blue()); }
                                                     continue;
                                                 }
 
                                                 // Hot-reload config
-                                                if debug_mode { println!("{} Hot-reloading config ({}bps)...", "[AUDIO]".green(), new_bitrate); }
+                                                if debug_mode { println!("{} Hot-reloading config ({}bps)...", "[AUDIO]".green(), valid_bitrate); }
                                                 
-                                                current_bitrate = new_bitrate;
-                                                current_complexity = new_complexity;
+                                                current_bitrate = valid_bitrate;
+                                                current_complexity = valid_complexity;
                                                 
                                                 // 2. Fade-out
                                                 capturer.start_fade_out();
@@ -229,6 +243,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 pcm_buffer.clear();
                                                 sequence = 0; // Optional: Resetting seq might cause jump on client, but Config implies restart
                                                 
+                                                // 5. Warm-up Packets (10 silent frames)
+                                                if debug_mode { println!("{} Sending 10 warm-up packets...", "[AUDIO]".green()); }
+                                                let silence_pcm = vec![0.0f32; 1920];
+                                                let silence_data = encode_frame(&mut encoder, &silence_pcm);
+                                                for _ in 0..10 {
+                                                    let ts = start_time.elapsed().as_millis() as u64;
+                                                    let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
+                                                    sequence += 1;
+                                                }
+
                                                 if debug_mode { println!("{} Config Applied: {}bps", "[AUDIO]".green(), current_bitrate); }
                                             } else if len >= 12 && &buf[0..12] == b"AS2P_GOODBYE" {
                                                 if debug_mode { println!("{} Client disconnected gracefully.", "[CONN]".blue()); }

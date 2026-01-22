@@ -8,12 +8,28 @@ android {
     compileSdk 34
     ndkVersion "25.1.8937393"
 
+    // 自動生成版本號 (yyMMddHHmm)
+    def date = new Date()
+    def autoVersionCode = Integer.parseInt(date.format('yyMMddHH'))
+
+    signingConfigs {
+        config {
+            // 注意：為了確保在不同電腦建置的 APK 可以互相覆蓋安裝，
+            // 建議將 debug.keystore 放在 android/app/ 目錄下。
+            // 如果不存在，則會嘗試使用系統預設路徑。
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+            storeFile file('debug.keystore').exists() ? file('debug.keystore') : file("${System.getProperty('user.home')}/.android/debug.keystore")
+            storePassword 'android'
+        }
+    }
+
     defaultConfig {
         applicationId "com.example.audiobtbridge"
         minSdk 28
         targetSdk 34
-        versionCode 3
-        versionName "1.0.3"
+        versionCode autoVersionCode
+        versionName "1.2.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -32,6 +48,7 @@ android {
 
     buildTypes {
         debug {
+            signingConfig signingConfigs.config
             packaging {
                 jniLibs {
                     useLegacyPackaging = false
@@ -39,6 +56,7 @@ android {
             }
         }
         release {
+            signingConfig signingConfigs.config
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

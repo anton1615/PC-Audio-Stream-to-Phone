@@ -72,18 +72,26 @@ The server communicates over **UDP Port 12345**.
 ## How to Use
 
 ### 1. Launch Server
-1.  Run `server.exe` (use `--debug` for terminal logs).
-2.  The server starts in **Listening** mode automatically.
+1.  Run `server.exe`. By default, the console window is hidden for a cleaner experience.
+2.  **Debug Console**: If you need to see logs or troubleshoot, open **CMD** or **PowerShell** and run:
+    ```bash
+    ./server.exe --debug
+    ```
+3.  **Arguments**:
+    *   `--debug`: Enables detailed connection and audio logs.
+    *   `--drop-rate <0.0-1.0>`: Simulates packet loss for testing stability (e.g., `0.1` for 10% loss).
 
 ### 2. Connect Client
 1.  Open the Android app.
 2.  Click **CONNECT**. It will broadcast a discovery signal and link with the server instantly.
 3.  **Background Streaming**: You can now safely switch to other apps or turn off your screen. The connection will remain active until you click STOP or swipe away the app.
+4.  **Spotify-style Notification**: Control the stream directly from your notification tray or lock screen.
 
 ### 3. Adjust Presets
 Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALITY** depending on your Wi-Fi stability.
 
 ## Troubleshooting
+*   **Rapid Preset Switching**: Switching presets too quickly (multiple clicks in a second) may cause the server to fall behind in reconfiguration, potentially leading to a temporary loss of audio streaming. If this happens, wait a few seconds or click **STOP** then **CONNECT** again.
 *   **Zombie Icon**: Fixed in V8. Clicking Quit now removes the tray icon immediately.
 *   **Mechanical Noise**: Ensure Windows is set to 48kHz, though the server now resamples automatically.
 *   **No Audio Captured**: Ensure your PC is playing sound through the default output device.

@@ -72,13 +72,26 @@ class AudioService : Service() {
 
     private fun updateNotification(content: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        
+        // 使用 MediaStyle
+        val mediaStyle = androidx.media.app.NotificationCompat.MediaStyle()
+            .setMediaSession(mediaSession?.sessionToken)
+            .setShowActionsInCompactView(0) // 顯示第一個按鈕 (Stop)
+
+        val stopIntent = Intent(this, AudioService::class.java).apply { action = ACTION_STOP }
+        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AS2P Audio Bridge")
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, android.R.drawable.ic_media_play))
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
+            .setOngoing(isRunning) // 只有在運行時才常駐
+            .setStyle(mediaStyle)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
             .build()
+
         nm.notify(1, notification)
     }
 
@@ -160,16 +173,19 @@ class AudioService : Service() {
                 if (serverAddress != null) {
                     // 如果已連線但超過 1.5 秒沒收到音訊
                     if (currentTime - lastAudioTime > 1500) {
-                        if (configRetryCount < 3) {
-                            log("No audio received. Retrying Config (${++configRetryCount}/3)...")
-                            sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
-                            lastAudioTime = currentTime // 給 Server 一點反應時間
-                        } else {
-                            log("Connection lost (Timeout). Back to searching...")
-                            serverAddress = null
-                            _isSearchingFlow.value = true
-                            configRetryCount = 0
-                        }
+                                                    if (configRetryCount < 3) {
+                                                        log("No audio received. Retrying Config (${++configRetryCount}/3)...")
+                                                        mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_BUFFERING, 0, 1.0f).build())
+                                                        sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                                                        lastAudioTime = currentTime // 給 Server 一點反應時間
+                                                    } else {
+                                                        log("Connection lost (Timeout). Back to searching...")
+                                                        mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f).build())
+                                                        serverAddress = null
+                                                        _isSearchingFlow.value = true
+                                                        configRetryCount = 0
+                                                    }
+                        
                     }
                 }
                 delay(500)
@@ -215,6 +231,7 @@ class AudioService : Service() {
                             if (serverAddress == null) {
                                 serverAddress = packet.address
                                 _isSearchingFlow.value = false
+                                mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f).build())
                                 log("Server Found: ${packet.address}")
                                 NativeBridge.resetAudio()
                                 connectionManager.reset()
@@ -251,6 +268,7 @@ class AudioService : Service() {
                             }
                         } else if (len >= 12 && String(data, 0, 12) == "AS2P_GOODBYE") {
                             log("Server Stopped. Resetting...")
+                            mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f).build())
                             serverAddress = null
                             _isSearchingFlow.value = true
                             NativeBridge.resetAudio()
