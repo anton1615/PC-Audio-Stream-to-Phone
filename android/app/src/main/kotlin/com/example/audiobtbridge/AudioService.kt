@@ -319,10 +319,17 @@ class AudioService : Service() {
                             _isSearchingFlow.value = true
                         }
                     } catch (e: Exception) {
-                        log("Error: ${e.message}")
+                        if (isRunning) {
+                            log("Error: ${e.message}")
+                        } else {
+                            // Service is stopping, socket close is expected.
+                            Log.i("AS2P_Service", "Socket closed gracefully.")
+                        }
                     }
                 }
-            } catch (e: Exception) { log("Socket Error: ${e.message}") } finally { udpSocket?.close() }
+            } catch (e: Exception) { 
+                if (isRunning) log("Socket Error: ${e.message}") 
+            } finally { udpSocket?.close() }
         }
 
         // Heartbeat Loop
