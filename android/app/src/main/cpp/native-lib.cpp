@@ -131,18 +131,18 @@ public:
                     return !mIsRunning || !mJitterBuffer.empty();
                 });
 
-                if (!mIsRunning) break;
-                if (mJitterBuffer.empty()) continue;
-
-                // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
-                while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
-                    if (!mJitterBuffer.empty()) {
-                        mJitterBuffer.erase(mJitterBuffer.begin());
-                        mExpectedSeq++;
-                    } else break;
-                }
-
-                if (mJitterBuffer.empty()) continue;
+                            if (!mIsRunning) break;
+                            if (mJitterBuffer.empty()) continue;
+                
+                            // Catch-up: Keep total latency (Jitter + PCM) at Target + 2
+                            // Increased to +2 to allow better tolerance for bursty network arrival
+                            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 2)) {
+                                if (!mJitterBuffer.empty()) {
+                                    mJitterBuffer.erase(mJitterBuffer.begin());
+                                    mExpectedSeq++;
+                                } else break;
+                            }
+                                if (mJitterBuffer.empty()) continue;
 
                 auto it = mJitterBuffer.begin();
                 currentSeq = it->first;
@@ -207,9 +207,6 @@ public:
 
     void pushPacket(uint64_t seq, const uint8_t* data, int len) {
         std::lock_guard<std::mutex> lock(mBufferMutex);
-        if (mJitterBuffer.count(seq) > 0) {
-            __android_log_print(ANDROID_LOG_DEBUG, "AS2P_Native", "[Network] Duplicate Seq: %llu (Redundancy Hit)", seq);
-        }
         mJitterBuffer[seq] = std::vector<uint8_t>(data, data + len);
         if (mJitterBuffer.size() > 50) mJitterBuffer.erase(mJitterBuffer.begin());
         mDecodeCV.notify_one();

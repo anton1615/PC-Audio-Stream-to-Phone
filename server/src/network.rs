@@ -50,8 +50,9 @@ impl UdpSender {
 
         self.socket.send_to(&packet, self.target).await.map_err(|e: std::io::Error| e.to_string())?;
         
-        // Redundancy: Send twice if enabled
+        // Redundancy: Send twice if enabled, with a small delay to improve time diversity
         if self.redundancy_enabled {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             self.socket.send_to(&packet, self.target).await.map_err(|e: std::io::Error| e.to_string())?;
         }
         

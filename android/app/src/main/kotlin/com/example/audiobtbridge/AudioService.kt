@@ -308,6 +308,7 @@ class AudioService : Service() {
 
                                 if (connectionManager.isDuplicate(seq)) {
                                     duplicateCount++
+                                    continue // Skip duplicate packets early
                                 }
 
                                 val now = System.currentTimeMillis()
