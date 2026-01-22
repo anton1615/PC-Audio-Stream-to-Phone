@@ -35,15 +35,17 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
-    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **Foreground Service Notification**.
+    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **MediaStyle Notification**.
+*   **Smart Persistence**: Automatically remembers your last used Latency Preset.
+*   **Battery Optimization**: Proactively requests exemption to ensure glitch-free audio in background.
 *   **Ultra-Low Latency (Pulse Architecture)**: 
     *   **UDP Port Unification**: Uses a single port (12345) for all traffic to maximize firewall penetration.
     *   **Jitter Buffer Catch-up**: Automatically drops old packets to maintain a strict latency target.
-    *   **Double-Send Redundancy**: Server can send packets twice to mitigate Wi-Fi interference.
+    *   **Double-Send Redundancy**: Server supports optional double-send mode to mitigate Wi-Fi interference.
 *   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **PLC (Packet Loss Concealment)** support.
 *   **Anti-Clipping**: 10ms linear Fade-out/Fade-in on all transitions (Start/Stop/Device Change).
 *   **CPU Efficient**: Optimized Windows server; stops UI updates when hidden to consume < 0.1% CPU.
-*   **Background Stable**: Uses **Foreground Service** on Android to prevent system throttling, with a persistent notification.
+*   **Background Stable**: Uses **Foreground Service** on Android to prevent system throttling, with a persistent Media controls.
 *   **Smart Disconnect**: Server automatically returns to Listening state if the connection is lost for 5 seconds.
 
 ## Supported Platforms
