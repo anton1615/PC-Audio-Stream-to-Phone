@@ -39,9 +39,6 @@ class MainActivity : ComponentActivity() {
         val initialMode = try { LatencyMode.valueOf(savedModeName!!) } catch (e: Exception) { LatencyMode.BALANCE }
         AudioService.setModeOffline(initialMode)
 
-        // 2. Request Ignore Battery Optimizations
-        checkBatteryOptimization()
-
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF64FFDA),
@@ -53,18 +50,6 @@ class MainActivity : ComponentActivity() {
                     MainScreen(this)
                 }
             }
-        }
-    }
-
-    private fun checkBatteryOptimization() {
-        val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-        val packageName = packageName
-        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-            val intent = Intent().apply {
-                action = android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-                data = android.net.Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
         }
     }
 }
