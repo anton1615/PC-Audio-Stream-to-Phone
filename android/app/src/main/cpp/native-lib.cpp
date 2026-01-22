@@ -12,49 +12,23 @@
 #include <sched.h>
 #include <unistd.h>
 #include <sys/resource.h>
-#include <dlfcn.h>
-#include <android/api-level.h>
+#include <unistd.h>
+#include <sched.h>
 
 #define LOG_TAG "AS2P_Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// ADPF Function Pointers
-typedef struct APerformanceHintManager APerformanceHintManager;
-typedef struct APerformanceHintSession APerformanceHintSession;
-typedef APerformanceHintManager* (*AFN_getManager)();
-typedef APerformanceHintSession* (*AFN_createSession)(APerformanceHintManager*, const int32_t*, size_t, int64_t);
-typedef void (*AFN_reportActualWorkDuration)(APerformanceHintSession*, int64_t);
-typedef void (*AFN_closeSession)(APerformanceHintSession*);
-
-static AFN_getManager pGetManager = nullptr;
-static AFN_createSession pCreateSession = nullptr;
-static AFN_reportActualWorkDuration pReportDuration = nullptr;
-static AFN_closeSession pCloseSession = nullptr;
-
 const int SAMPLE_RATE = 48000;
 const int CHANNELS = 2;
 const int MAX_FRAME_SIZE = 960; 
-const int64_t TARGET_DURATION_NS = 20000000; // 20ms
 
 class AudioEngine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
     AudioEngine() { 
         createDecoder(); 
-        loadADPF();
     }
     ~AudioEngine() { 
         destroyDecoder(); 
-        if (mHintSession && pCloseSession) pCloseSession(mHintSession);
-    }
-
-    void loadADPF() {
-        void* lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
-        if (lib) {
-            pGetManager = (AFN_getManager)dlsym(lib, "APerformanceHintManager_getManager");
-            pCreateSession = (AFN_createSession)dlsym(lib, "APerformanceHintManager_createSession");
-            pReportDuration = (AFN_reportActualWorkDuration)dlsym(lib, "APerformanceHintSession_reportActualWorkDuration");
-            pCloseSession = (AFN_closeSession)dlsym(lib, "APerformanceHintSession_close");
-        }
     }
 
     void destroyDecoder() {
@@ -115,19 +89,17 @@ public:
         // --- THREAD PERFORMANCE SETUP (One-time) ---
         static thread_local bool perfSet = false;
         if (!perfSet) {
-            // 1. Linux Real-time Priority (-20 is highest)
-            if (setpriority(PRIO_PROCESS, 0, -20) == 0) {
-                LOGI("[Performance] Thread Priority set to -20");
+            // 1. Thread Affinity (Big/Medium Cores 4-7)
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(4, &cpuset); CPU_SET(5, &cpuset); CPU_SET(6, &cpuset); CPU_SET(7, &cpuset);
+            if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
+                LOGI("[Performance] Thread Affinity set to cores 4-7");
             }
 
-            // 2. ADPF Session Creation
-            if (pGetManager && pCreateSession) {
-                APerformanceHintManager* manager = pGetManager();
-                if (manager) {
-                    int32_t tid = gettid();
-                    mHintSession = pCreateSession(manager, &tid, 1, TARGET_DURATION_NS);
-                    if (mHintSession) LOGI("[Performance] ADPF Session Created for TID %d", tid);
-                }
+            // 2. Linux Priority (-16 is very high, but slightly less aggressive than -20)
+            if (setpriority(PRIO_PROCESS, 0, -16) == 0) {
+                LOGI("[Performance] Thread Priority set to -16");
             }
             perfSet = true;
         }
@@ -216,11 +188,6 @@ public:
         auto endTime = std::chrono::high_resolution_clock::now();
         auto totalDuration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
         
-        // 3. ADPF Report
-        if (mHintSession && pReportDuration) {
-            pReportDuration(mHintSession, totalDuration * 1000); // ns
-        }
-
         if (totalDuration > 15000) { // Callback > 15ms (Total turn is 20ms)
             LOGI("[Performance] CRITICAL: Callback took %lld us (Core: %d)", totalDuration, sched_getcpu());
         }
@@ -263,7 +230,6 @@ private:
     uint64_t mExpectedSeq = 0;
     bool mFirstPacket = true;
     std::atomic<int> mPlcCount{0};
-    APerformanceHintSession* mHintSession = nullptr;
 };
 
 static AudioEngine gAudioEngine;
