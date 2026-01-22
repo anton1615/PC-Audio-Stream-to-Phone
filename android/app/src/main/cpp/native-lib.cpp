@@ -9,6 +9,8 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <sched.h>
+#include <unistd.h>
 
 #define LOG_TAG "AS2P_Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -51,7 +53,7 @@ public:
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency) 
-               ->setSharingMode(oboe::SharingMode::Shared)      
+               ->setSharingMode(oboe::SharingMode::Exclusive)      
                ->setFormat(oboe::AudioFormat::Float)
                ->setChannelCount(CHANNELS)
                ->setSampleRate(SAMPLE_RATE)
@@ -77,6 +79,25 @@ public:
     }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *audioStream, void *audioData, int32_t numFrames) override {
+        // --- THREAD AFFINITY (One-time setup for this thread) ---
+        static thread_local bool affinitySet = false;
+        if (!affinitySet) {
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            // On Tensor GS101 (Pixel 6a): 4,5 are Medium, 6,7 are Big. 
+            // We target these 4 high-performance cores.
+            CPU_SET(4, &cpuset);
+            CPU_SET(5, &cpuset);
+            CPU_SET(6, &cpuset);
+            CPU_SET(7, &cpuset);
+            if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
+                LOGI("[Performance] Thread Affinity set to cores 4-7");
+            } else {
+                LOGI("[Performance] Failed to set Thread Affinity");
+            }
+            affinitySet = true;
+        }
+
         auto startTime = std::chrono::high_resolution_clock::now();
         float *output = static_cast<float *>(audioData);
         int32_t totalSamplesNeeded = numFrames * CHANNELS;
