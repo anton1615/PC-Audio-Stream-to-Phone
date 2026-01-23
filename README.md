@@ -42,6 +42,8 @@ There are several audio streaming solutions available on the market (e.g., Audio
     *   **Atomic Reset Mechanism**: Includes a 100ms cooldown after preset switching to ensure seamless sequence synchronization.
     *   **PCM FIFO Buffer**: Uses a thread-safe circular buffer to absorb system-level performance jitter.
     *   **Oboe Exclusive Mode**: Direct hardware access for the lowest possible round-trip latency.
+    *   **PLC Toggle**: Runtime switch to enable/disable Packet Loss Concealment for audio artifact control.
+    *   **Optimized Redundancy**: Server introduces 1ms delay for duplicate packets to maximize time diversity against interference.
 *   **Smart Persistence**: Automatically remembers your last used Latency Preset.
 *   **Battery Optimization**: Proactively requests exemption to ensure glitch-free audio in background.
 *   **Ultra-Low Latency (Pulse Architecture)**: 
