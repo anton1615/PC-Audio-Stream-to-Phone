@@ -212,6 +212,11 @@ public:
         resetInternal();
     }
 
+    void setPlcEnabled(bool enabled) {
+        mPlcEnabled = enabled;
+        LOGI("[Jitter] PLC %s", enabled ? "ENABLED" : "DISABLED");
+    }
+
     int getBufferDepth() { 
         std::lock_guard<std::mutex> lock(mBufferMutex); 
         return (int)((mJitterBuffer.size() * 1920 + mPcmBuffer.size()) / 1920); 
