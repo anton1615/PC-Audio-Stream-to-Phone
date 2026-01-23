@@ -116,10 +116,12 @@ class AudioService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action
             if (BluetoothDevice.ACTION_ACL_DISCONNECTED == action || AudioManager.ACTION_AUDIO_BECOMING_NOISY == action) {
-                if (serverAddress != null) {
-                    log("Audio Device Disconnected. Terminating Connection...")
-                    // 1. Send Goodbye immediately
-                    sendGoodbyeToServer()
+                if (isRunning) {
+                    log("Audio Device Disconnected. Terminating Service...")
+                    // 1. Send Goodbye if connected
+                    if (serverAddress != null) {
+                        sendGoodbyeToServer()
+                    }
                     // 2. Stop Service
                     stopSelf()
                 }

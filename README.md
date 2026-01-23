@@ -51,7 +51,8 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **PLC (Packet Loss Concealment)** support.
 *   **Anti-Clipping**: 10ms linear Fade-out/Fade-in on all transitions (Start/Stop/Device Change).
 *   **CPU Efficient**: Optimized Windows server; stops UI updates when hidden to consume < 0.1% CPU.
-*   **Background Stable**: Uses **Foreground Service** on Android to prevent system throttling, with a persistent Media controls.
+*   **Background Stable**: Uses **Foreground Service** on Android to prevent system throttling, with persistent Media controls.
+*   **Bluetooth-linked Lifecycle**: Automatically stops the app and closes the connection if Bluetooth headphones are disconnected, whether searching or streaming.
 *   **Smart Disconnect**: Server automatically returns to Listening state if the connection is lost for 5 seconds.
 
 ## Supported Platforms
