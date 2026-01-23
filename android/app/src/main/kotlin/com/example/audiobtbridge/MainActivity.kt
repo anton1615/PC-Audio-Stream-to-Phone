@@ -39,6 +39,9 @@ class MainActivity : ComponentActivity() {
         val initialMode = try { LatencyMode.valueOf(savedModeName!!) } catch (e: Exception) { LatencyMode.BALANCE }
         AudioService.setModeOffline(initialMode)
 
+        val initialPlc = prefs.getBoolean("plc_enabled", true)
+        AudioService.updatePlcEnabled(initialPlc)
+
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF64FFDA),
@@ -140,6 +143,33 @@ fun MainScreen(context: Context) {
                     }
                 }
             }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // PLC Toggle
+        var plcEnabled by remember { 
+            mutableStateOf(context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE).getBoolean("plc_enabled", true)) 
+        }
+        
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text("Packet Loss Concealment", fontWeight = FontWeight.Bold)
+                Text("Reduce robotic artifacts by disabling", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            }
+            Switch(
+                checked = plcEnabled,
+                onCheckedChange = { enabled ->
+                    plcEnabled = enabled
+                    context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+                        .edit().putBoolean("plc_enabled", enabled).apply()
+                    AudioService.updatePlcEnabled(enabled)
+                }
+            )
         }
 
         Spacer(modifier = Modifier.weight(1f))

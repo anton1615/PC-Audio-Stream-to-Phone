@@ -177,8 +177,15 @@ public:
             int decoded = 0;
 
             if (isPlc) {
-                decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
-                if (decoded > 0) mPlcCount++;
+                if (mPlcEnabled) {
+                    // Standard Opus PLC
+                    decoded = opus_decode_float(mOpusDecoder, nullptr, 0, decodeOut, MAX_FRAME_SIZE, 0);
+                    if (decoded > 0) mPlcCount++;
+                } else {
+                    // PLC Disabled: Zero-fill to maintain timing (Silence)
+                    memset(decodeOut, 0, MAX_FRAME_SIZE * CHANNELS * sizeof(float));
+                    decoded = MAX_FRAME_SIZE;
+                }
             } else if (!opusData.empty()) {
                 auto dStart = std::chrono::high_resolution_clock::now();
                 decoded = opus_decode_float(mOpusDecoder, opusData.data(), opusData.size(), decodeOut, MAX_FRAME_SIZE, 0);
@@ -235,6 +242,7 @@ private:
     std::condition_variable mDecodeCV;
     std::thread mDecodeThread;
     std::atomic<bool> mIsRunning{false};
+    std::atomic<bool> mPlcEnabled{true};
     OpusDecoder *mOpusDecoder = nullptr;
     bool mIsBuffering = true;
     int mTargetBufferSize = 5;
@@ -251,6 +259,7 @@ JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_initNative(JN
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_stopNative(JNIEnv *env, jobject thiz) { gAudioEngine.stop(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_resetAudio(JNIEnv *env, jobject thiz) { gAudioEngine.resetInternal(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setBufferSize(JNIEnv *env, jobject thiz, jint size) { gAudioEngine.setBufferSize(size); }
+JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setPlcEnabled(JNIEnv *env, jobject thiz, jboolean enabled) { gAudioEngine.setPlcEnabled(enabled); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) { return gAudioEngine.getBufferDepth(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) { return gAudioEngine.getPLCCount(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_writeToNativeBuffer(JNIEnv *env, jobject thiz, jbyteArray data, jint length) {

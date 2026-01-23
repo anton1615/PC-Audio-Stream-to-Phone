@@ -56,10 +56,22 @@ class AudioService : Service() {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_UPDATE_MODE = "ACTION_UPDATE_MODE"
+        const val ACTION_UPDATE_PLC = "ACTION_UPDATE_PLC"
         const val EXTRA_MODE = "EXTRA_MODE"
+        const val EXTRA_PLC = "EXTRA_PLC"
         private const val CHANNEL_ID = "audio_stream_channel"
 
         fun setModeOffline(mode: LatencyMode) { _latencyModeFlow.value = mode }
+        
+        fun updatePlcEnabled(enabled: Boolean) {
+            serviceInstance?.let {
+                val intent = Intent(it, AudioService::class.java).apply {
+                    action = ACTION_UPDATE_PLC
+                    putExtra(EXTRA_PLC, enabled)
+                }
+                it.startService(intent)
+            }
+        }
         
         // Internal reference to the service instance for notification updates
         private var serviceInstance: AudioService? = null
@@ -175,6 +187,11 @@ class AudioService : Service() {
             ACTION_UPDATE_MODE -> {
                 val modeName = intent.getStringExtra(EXTRA_MODE)
                 modeName?.let { updateLatencyMode(LatencyMode.valueOf(it)) }
+            }
+            ACTION_UPDATE_PLC -> {
+                val enabled = intent.getBooleanExtra(EXTRA_PLC, true)
+                NativeBridge.setPlcEnabled(enabled)
+                log("PLC ${if (enabled) "Enabled" else "Disabled"}")
             }
         }
         return START_NOT_STICKY
