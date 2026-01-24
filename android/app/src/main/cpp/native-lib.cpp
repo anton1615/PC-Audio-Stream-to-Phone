@@ -94,13 +94,14 @@ public:
 
         std::lock_guard<std::mutex> lock(mBufferMutex);
         
-        // Use user-defined buffering target (in packets, 1 packet = 20ms = 960 samples * 2 channels)
+        // Fix: Use total available samples (Jitter + PCM) to decide when to stop buffering
+        size_t totalAvailableSamples = mPcmBuffer.size() + (mJitterBuffer.size() * 1920);
         size_t samplesTarget = (size_t)mTargetBufferSize * 1920;
 
         if (mIsBuffering) {
-            if (mPcmBuffer.size() >= samplesTarget) {
+            if (totalAvailableSamples >= samplesTarget) {
                 mIsBuffering = false;
-                LOGI("[Jitter] Buffering Complete. PCM: %zu", mPcmBuffer.size());
+                LOGI("[Jitter] Buffering Complete. Total Samples: %zu", totalAvailableSamples);
             } else return oboe::DataCallbackResult::Continue;
         }
 
@@ -130,17 +131,19 @@ public:
                 
                 // Wait for packets
                 mDecodeCV.wait_for(lock, std::chrono::milliseconds(50), [this] {
-                    return !mIsRunning || !mJitterBuffer.empty();
+                    bool lowPcm = (mPcmBuffer.size() / 1920) < (size_t)mPcmTarget;
+                    return !mIsRunning || (!mJitterBuffer.empty() && (mIsBuffering || lowPcm));
                 });
 
-                            if (!mIsRunning) break;
-                            if (mJitterBuffer.empty()) continue;
+                if (!mIsRunning) break;
+                if (mJitterBuffer.empty()) continue;
                 
-                                            // Catch-up: Keep total latency (Jitter + PCM) at Target + 1
+                // Demand-based decoding: Only decode if we need to buffer OR PCM inventory is low
+                bool lowPcm = (mPcmBuffer.size() / 1920) < (size_t)mPcmTarget;
+                if (!mIsBuffering && !lowPcm) continue;
                 
-                                            // Reverted to +1 for minimal latency as per user request
-                
-                                            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + 1)) {
+                            // Catch-up: Keep total latency (Jitter + PCM) at Target + Threshold
+                            while (mJitterBuffer.size() + (mPcmBuffer.size() / 1920) > (size_t)(mTargetBufferSize + mCatchUpThreshold)) {
                 
                             
                                 if (!mJitterBuffer.empty()) {
@@ -209,7 +212,17 @@ public:
     void setBufferSize(int size) {
         // Validation: Clamp between 1 (20ms) and 25 (500ms) to prevent overflow/DoS
         mTargetBufferSize = (size < 1) ? 1 : (size > 25 ? 25 : size);
+        // Ensure PCM target doesn't exceed new total buffer size
+        if (mPcmTarget > mTargetBufferSize) mPcmTarget = mTargetBufferSize;
         resetInternal();
+    }
+
+    void updateAdvancedSettings(int pcmTarget, int catchUpThreshold) {
+        std::lock_guard<std::mutex> lock(mBufferMutex);
+        mPcmTarget = (pcmTarget < 1) ? 1 : (pcmTarget > 10 ? 10 : pcmTarget);
+        if (mPcmTarget > mTargetBufferSize) mPcmTarget = mTargetBufferSize;
+        mCatchUpThreshold = (catchUpThreshold < 1) ? 1 : (catchUpThreshold > 10 ? 10 : catchUpThreshold);
+        LOGI("[Jitter] Advanced Settings Updated: PCM Target %d, Catch-up +%d", mPcmTarget, mCatchUpThreshold);
     }
 
     void setPlcEnabled(bool enabled) {
@@ -251,6 +264,8 @@ private:
     OpusDecoder *mOpusDecoder = nullptr;
     bool mIsBuffering = true;
     int mTargetBufferSize = 5;
+    int mPcmTarget = 5;
+    int mCatchUpThreshold = 1;
     uint64_t mExpectedSeq = 0;
     bool mFirstPacket = true;
     std::atomic<int> mPlcCount{0};
@@ -265,6 +280,9 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_stopNative(JN
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_resetAudio(JNIEnv *env, jobject thiz) { gAudioEngine.resetInternal(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setBufferSize(JNIEnv *env, jobject thiz, jint size) { gAudioEngine.setBufferSize(size); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_setPlcEnabled(JNIEnv *env, jobject thiz, jboolean enabled) { gAudioEngine.setPlcEnabled(enabled); }
+JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_updateAdvancedSettings(JNIEnv *env, jobject thiz, jint pcmTarget, jint catchUpThreshold) {
+    gAudioEngine.updateAdvancedSettings(pcmTarget, catchUpThreshold);
+}
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) { return gAudioEngine.getBufferDepth(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) { return gAudioEngine.getPLCCount(); }
 JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_writeToNativeBuffer(JNIEnv *env, jobject thiz, jbyteArray data, jint length) {

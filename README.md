@@ -36,6 +36,9 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
     *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart** and **MediaStyle Notification**.
+*   **Custom Setting Preset (v1.2.0)**:
+    *   **Advanced Tuning UI**: Complete control over Bitrate, Buffer Size, Catch-up Threshold, and PCM Pre-decode Target.
+    *   **Demand-based Decoding**: Tailor the CPU vs. Network stability balance by adjusting the PCM inventory target.
 *   **High Performance Architecture**:
     *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
     *   **Fine-grained Locking**: Optimized mutex usage to prevent playback thread blocking during long decode operations.

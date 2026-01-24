@@ -36,6 +36,7 @@ class AudioService : Service() {
     private val connectionManager = ConnectionManager()
     private lateinit var audioManager: AudioManager
     private var mediaSession: MediaSessionCompat? = null
+    private var currentActiveConfig: AudioConfig? = null
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -57,8 +58,14 @@ class AudioService : Service() {
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_UPDATE_MODE = "ACTION_UPDATE_MODE"
         const val ACTION_UPDATE_PLC = "ACTION_UPDATE_PLC"
+        const val ACTION_UPDATE_ADVANCED = "ACTION_UPDATE_ADVANCED"
         const val EXTRA_MODE = "EXTRA_MODE"
         const val EXTRA_PLC = "EXTRA_PLC"
+        const val EXTRA_BITRATE = "EXTRA_BITRATE"
+        const val EXTRA_COMPLEXITY = "EXTRA_COMPLEXITY"
+        const val EXTRA_BUFFER_SIZE = "EXTRA_BUFFER_SIZE"
+        const val EXTRA_PCM_TARGET = "EXTRA_PCM_TARGET"
+        const val EXTRA_CATCHUP = "EXTRA_CATCHUP"
         private const val CHANNEL_ID = "audio_stream_channel"
 
         fun setModeOffline(mode: LatencyMode) { _latencyModeFlow.value = mode }
@@ -68,6 +75,20 @@ class AudioService : Service() {
                 val intent = Intent(it, AudioService::class.java).apply {
                     action = ACTION_UPDATE_PLC
                     putExtra(EXTRA_PLC, enabled)
+                }
+                it.startService(intent)
+            }
+        }
+
+        fun applyAdvancedSettings(bitrate: Int, complexity: Int, bufferSize: Int, pcmTarget: Int, catchup: Int) {
+            serviceInstance?.let {
+                val intent = Intent(it, AudioService::class.java).apply {
+                    action = ACTION_UPDATE_ADVANCED
+                    putExtra(EXTRA_BITRATE, bitrate)
+                    putExtra(EXTRA_COMPLEXITY, complexity)
+                    putExtra(EXTRA_BUFFER_SIZE, bufferSize)
+                    putExtra(EXTRA_PCM_TARGET, pcmTarget)
+                    putExtra(EXTRA_CATCHUP, catchup)
                 }
                 it.startService(intent)
             }
@@ -161,12 +182,16 @@ class AudioService : Service() {
                 if (isRunning) {
                     log("Audio Device Added: Resetting Buffer...")
                     NativeBridge.resetAudio()
+                    // Re-sync current config to server
+                    currentActiveConfig?.let { sendConfigToServer(it) }
                 }
             }
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
                 if (isRunning) {
                     log("Audio Device Removed: Resetting Buffer...")
                     NativeBridge.resetAudio()
+                    // Re-sync current config to server
+                    currentActiveConfig?.let { sendConfigToServer(it) }
                 }
             }
         }, null)
@@ -192,6 +217,18 @@ class AudioService : Service() {
                 val enabled = intent.getBooleanExtra(EXTRA_PLC, true)
                 NativeBridge.setPlcEnabled(enabled)
                 log("PLC ${if (enabled) "Enabled" else "Disabled"}")
+            }
+            ACTION_UPDATE_ADVANCED -> {
+                val br = intent.getIntExtra(EXTRA_BITRATE, 160000)
+                val comp = intent.getIntExtra(EXTRA_COMPLEXITY, 8)
+                val buf = intent.getIntExtra(EXTRA_BUFFER_SIZE, 4)
+                val pcmT = intent.getIntExtra(EXTRA_PCM_TARGET, 2)
+                val cup = intent.getIntExtra(EXTRA_CATCHUP, 1)
+                
+                NativeBridge.setBufferSize(buf)
+                NativeBridge.updateAdvancedSettings(pcmT, cup)
+                sendConfigToServer(AudioConfig(buf, br, comp))
+                log("Advanced Settings Applied")
             }
         }
         return START_NOT_STICKY
@@ -228,10 +265,25 @@ class AudioService : Service() {
         _isSearchingFlow.value = true
         NativeBridge.initNative()
         
-        // --- Sync initial preset to Native layer ---
-        val initialConfig = latencyManager.getConfigForMode(_latencyModeFlow.value)
-        NativeBridge.setBufferSize(initialConfig.bufferSize)
-        Log.i("AS2P_Diag", "[Init] Synced initial Buffer Size: ${initialConfig.bufferSize}")
+        // --- Sync Settings to Native layer ---
+        val prefs = getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+        val mode = _latencyModeFlow.value
+        val config = latencyManager.getConfigForMode(mode)
+        
+        // Load advanced overrides if present, otherwise use mode defaults
+        val buf = prefs.getInt("adv_buffer_size", config.bufferSize)
+        val bitrate = prefs.getInt("adv_bitrate", config.bitrate)
+        val complexity = prefs.getInt("adv_complexity", config.complexity)
+        val pcmT = prefs.getInt("adv_pcm_target", 5) // Default to legacy behavior if not set
+        val cup = prefs.getInt("adv_catchup", 1)
+        val plc = prefs.getBoolean("plc_enabled", true)
+
+        NativeBridge.setBufferSize(buf)
+        NativeBridge.updateAdvancedSettings(pcmT, cup)
+        NativeBridge.setPlcEnabled(plc)
+        
+        currentActiveConfig = AudioConfig(buf, bitrate, complexity)
+        Log.i("AS2P_Diag", "[Init] Synced Settings: Buf=$buf, BR=$bitrate, Cmp=$complexity, PCM=$pcmT, Catchup=+$cup, PLC=$plc")
 
         // --- Config & Audio Watchdog ---
         var lastAudioTime = System.currentTimeMillis()
@@ -245,7 +297,7 @@ class AudioService : Service() {
                                                     if (configRetryCount < 3) {
                                                         log("No audio received. Retrying Config (${++configRetryCount}/3)...")
                                                         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_BUFFERING, 0, 1.0f).build())
-                                                        sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                                                        currentActiveConfig?.let { sendConfigToServer(it) }
                                                         lastAudioTime = currentTime // 給 Server 一點反應時間
                                                     } else {
                                                         log("Connection lost (Timeout). Back to searching...")
@@ -307,7 +359,10 @@ class AudioService : Service() {
                                 NativeBridge.resetAudio()
                                 connectionManager.reset()
                                 lastReceivedSeq = -1L // Reset tracker
-                                sendConfigToServer(latencyManager.getConfigForMode(_latencyModeFlow.value))
+                                
+                                // Fix: Explicitly apply current mode settings to Native & Server upon connection
+                                updateLatencyMode(_latencyModeFlow.value)
+                                
                                 lastAudioTime = System.currentTimeMillis()
                                 configRetryCount = 0
                             }
@@ -415,13 +470,37 @@ class AudioService : Service() {
 
     private fun updateLatencyMode(mode: LatencyMode) {
         _latencyModeFlow.value = mode
-        val config = latencyManager.getConfigForMode(mode)
-        NativeBridge.setBufferSize(config.bufferSize)
-        sendConfigToServer(config)
-        log("Mode Updated: ${mode.name}")
+        val prefs = getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+        
+        if (mode == LatencyMode.CUSTOM_SETTING) {
+            // Load and apply the saved advanced settings
+            val br = prefs.getInt("adv_bitrate", 160000)
+            val comp = prefs.getInt("adv_complexity", 8)
+            val buf = prefs.getInt("adv_buffer_size", 4)
+            val pcmT = prefs.getInt("adv_pcm_target", 2)
+            val cup = prefs.getInt("adv_catchup", 1)
+            val plc = prefs.getBoolean("plc_enabled", true)
+
+            NativeBridge.setBufferSize(buf)
+            NativeBridge.updateAdvancedSettings(pcmT, cup)
+            NativeBridge.setPlcEnabled(plc)
+            sendConfigToServer(AudioConfig(buf, br, comp))
+            log("Custom Settings Applied")
+        } else {
+            // Standard Preset: Use defaults from LatencyManager and reset native tweaks
+            val config = latencyManager.getConfigForMode(mode)
+            
+            // Fix: Reset native catch-up and pcm-target to prevent +20ms creep from previous sessions
+            NativeBridge.setBufferSize(config.bufferSize)
+            NativeBridge.updateAdvancedSettings(5, 1) // Default values for stability/latency
+            
+            sendConfigToServer(config)
+            log("Mode Updated: ${mode.name}")
+        }
     }
 
     private fun sendConfigToServer(config: AudioConfig) {
+        currentActiveConfig = config
         val target = serverAddress ?: return
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -471,6 +550,7 @@ class AudioService : Service() {
         udpSocket?.close()
         _serviceState.value = false
         _isSearchingFlow.value = false
+        _latencyFlow.value = 0.0f
         _latencyHistoryFlow.value = emptyList()
         mediaSession?.release()
         

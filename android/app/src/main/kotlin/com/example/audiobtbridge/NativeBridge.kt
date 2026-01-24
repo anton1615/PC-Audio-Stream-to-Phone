@@ -10,6 +10,7 @@ object NativeBridge {
     external fun resetAudio()
     external fun setBufferSize(size: Int)
     external fun setPlcEnabled(enabled: Boolean)
+    external fun updateAdvancedSettings(pcmTarget: Int, catchUpThreshold: Int)
     external fun getBufferDepth(): Int
     external fun getPLCCount(): Int
     external fun getLastSequence(): Long

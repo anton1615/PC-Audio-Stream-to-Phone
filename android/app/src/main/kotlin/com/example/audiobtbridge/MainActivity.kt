@@ -9,6 +9,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -78,6 +79,7 @@ fun LatencyChart(history: List<Float>, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(context: Context) {
     val serviceState by AudioService.serviceState.collectAsState()
@@ -85,8 +87,9 @@ fun MainScreen(context: Context) {
     val history by AudioService.latencyHistoryFlow.collectAsState()
     val currentMode by AudioService.latencyModeFlow.collectAsState()
     val isSearching by AudioService.isSearchingFlow.collectAsState()
+    val scrollState = rememberScrollState()
 
-    Column(modifier = Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp).verticalScroll(scrollState), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("PC Audio Stream to Phone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
         }
@@ -113,7 +116,13 @@ fun MainScreen(context: Context) {
         Spacer(modifier = Modifier.height(20.dp))
 
         // Preset Selection
-        val radioOptions = listOf(LatencyMode.LOW_LATENCY, LatencyMode.BALANCE, LatencyMode.HIGH_QUALITY, LatencyMode.BEST_QUALITY)
+        val radioOptions = listOf(
+            LatencyMode.LOW_LATENCY, 
+            LatencyMode.BALANCE, 
+            LatencyMode.HIGH_QUALITY, 
+            LatencyMode.BEST_QUALITY,
+            LatencyMode.CUSTOM_SETTING
+        )
         Column(modifier = Modifier.selectableGroup().fillMaxWidth()) {
             radioOptions.forEach { mode ->
                 val selected = mode == currentMode
@@ -139,40 +148,109 @@ fun MainScreen(context: Context) {
                 ) {
                     Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = selected, onClick = null)
-                        Text(text = mode.name.replace("_", " "), modifier = Modifier.padding(start = 16.dp))
+                        Text(
+                            text = if (mode == LatencyMode.CUSTOM_SETTING) "CUSTOM SETTING" else mode.name.replace("_", " "), 
+                            modifier = Modifier.padding(start = 16.dp),
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // PLC Toggle
-        var plcEnabled by remember { 
-            mutableStateOf(context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE).getBoolean("plc_enabled", true)) 
-        }
-        
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text("Packet Loss Concealment", fontWeight = FontWeight.Bold)
-                Text("Reduce robotic artifacts by disabling", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            }
-            Switch(
-                checked = plcEnabled,
-                onCheckedChange = { enabled ->
-                    plcEnabled = enabled
-                    context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
-                        .edit().putBoolean("plc_enabled", enabled).apply()
-                    AudioService.updatePlcEnabled(enabled)
+        // Advanced Settings - ONLY SHOW IF CUSTOM_SETTING IS SELECTED
+        if (currentMode == LatencyMode.CUSTOM_SETTING) {
+            val prefs = context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+            
+            var advBitrate by remember { mutableStateOf(prefs.getInt("adv_bitrate", 160000)) }
+            var advComplexity by remember { mutableStateOf(prefs.getInt("adv_complexity", 8).toFloat()) }
+            var advBufferSize by remember { mutableStateOf(prefs.getInt("adv_buffer_size", 4).toFloat()) }
+            var advPcmTarget by remember { mutableStateOf(prefs.getInt("adv_pcm_target", 2).toFloat()) }
+            var advCatchup by remember { mutableStateOf(prefs.getInt("adv_catchup", 1).toFloat()) }
+            var plcEnabled by remember { mutableStateOf(prefs.getBoolean("plc_enabled", true)) }
+
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp).background(Color.White.copy(0.05f), RoundedCornerShape(16.dp)).padding(16.dp)) {
+                Text("ADVANCED TUNING", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // PLC Switch
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("Packet Loss Concealment", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("PLC Off = Audio Drops", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
+                    Switch(checked = plcEnabled, onCheckedChange = { plcEnabled = it })
                 }
-            )
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(0.1f))
+
+                // Bitrate Selection
+                Text("Bitrate: ${advBitrate / 1000}k", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                val bitrates = listOf(32000, 48000, 64000, 96000, 128000, 192000, 256000, 320000)
+                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    bitrates.forEach { br ->
+                        FilterChip(
+                            selected = advBitrate == br,
+                            onClick = { advBitrate = br },
+                            label = { Text("${br / 1000}k") },
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Complexity
+                Text("Complexity: ${advComplexity.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Slider(value = advComplexity, onValueChange = { advComplexity = it }, valueRange = 0f..10f, steps = 9)
+
+                // Total Buffer
+                Text("Total Buffer Size (Target): ${advBufferSize.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Slider(value = advBufferSize, onValueChange = { 
+                    advBufferSize = it 
+                    if (advPcmTarget > advBufferSize) advPcmTarget = advBufferSize
+                }, valueRange = 1f..20f, steps = 18)
+
+                // PCM Target
+                Text("PCM Pre-decode Target: ${advPcmTarget.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text("Recommended: 2. Higher = Better CPU stability, Lower = Larger Jitter Buffer.", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Slider(value = advPcmTarget, onValueChange = { advPcmTarget = it }, valueRange = 1f..advBufferSize.coerceAtLeast(1f), steps = (advBufferSize.toInt() - 1).coerceAtLeast(0))
+
+                // Catch-up
+                Text("Catch-up Threshold: +${advCatchup.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Slider(value = advCatchup, onValueChange = { advCatchup = it }, valueRange = 1f..10f, steps = 8)
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = {
+                        prefs.edit().apply {
+                            putInt("adv_bitrate", advBitrate)
+                            putInt("adv_complexity", advComplexity.toInt())
+                            putInt("adv_buffer_size", advBufferSize.toInt())
+                            putInt("adv_pcm_target", advPcmTarget.toInt())
+                            putInt("adv_catchup", advCatchup.toInt())
+                            putBoolean("plc_enabled", plcEnabled)
+                            apply()
+                        }
+                        AudioService.applyAdvancedSettings(
+                            advBitrate, advComplexity.toInt(), advBufferSize.toInt(), advPcmTarget.toInt(), advCatchup.toInt()
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("APPLY CHANGES")
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
