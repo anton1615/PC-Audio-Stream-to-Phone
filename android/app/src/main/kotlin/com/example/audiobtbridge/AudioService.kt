@@ -37,6 +37,8 @@ class AudioService : Service() {
     private lateinit var audioManager: AudioManager
     private var mediaSession: MediaSessionCompat? = null
     private var currentActiveConfig: AudioConfig? = null
+    private var isUiVisible = false
+    private var lastNotificationContent: String? = null
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -59,6 +61,8 @@ class AudioService : Service() {
         const val ACTION_UPDATE_MODE = "ACTION_UPDATE_MODE"
         const val ACTION_UPDATE_PLC = "ACTION_UPDATE_PLC"
         const val ACTION_UPDATE_ADVANCED = "ACTION_UPDATE_ADVANCED"
+        const val ACTION_UI_VISIBLE = "ACTION_UI_VISIBLE"
+        const val ACTION_UI_HIDDEN = "ACTION_UI_HIDDEN"
         const val EXTRA_MODE = "EXTRA_MODE"
         const val EXTRA_PLC = "EXTRA_PLC"
         const val EXTRA_BITRATE = "EXTRA_BITRATE"
@@ -112,6 +116,10 @@ class AudioService : Service() {
     }
 
     private fun updateNotification(content: String) {
+        // Power Optimization: Skip update if content is identical
+        if (content == lastNotificationContent) return
+        lastNotificationContent = content
+
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
         // 使用 MediaStyle
@@ -230,6 +238,8 @@ class AudioService : Service() {
                 sendConfigToServer(AudioConfig(buf, br, comp))
                 log("Advanced Settings Applied")
             }
+            ACTION_UI_VISIBLE -> isUiVisible = true
+            ACTION_UI_HIDDEN -> isUiVisible = false
         }
         return START_NOT_STICKY
     }
@@ -316,12 +326,14 @@ class AudioService : Service() {
         // Stats Thread
         serviceScope.launch {
             while (isRunning) {
-                val latency = NativeBridge.getBufferDepth() * 20.0f
-                _latencyFlow.value = latency
-                val history = _latencyHistoryFlow.value.toMutableList()
-                history.add(latency)
-                if (history.size > 60) history.removeAt(0)
-                _latencyHistoryFlow.value = history
+                if (isUiVisible) {
+                    val latency = NativeBridge.getBufferDepth() * 20.0f
+                    _latencyFlow.value = latency
+                    val history = _latencyHistoryFlow.value.toMutableList()
+                    history.add(latency)
+                    if (history.size > 60) history.removeAt(0)
+                    _latencyHistoryFlow.value = history
+                }
                 delay(100)
             }
         }
@@ -487,12 +499,13 @@ class AudioService : Service() {
             sendConfigToServer(AudioConfig(buf, br, comp))
             log("Custom Settings Applied")
         } else {
-            // Standard Preset: Use defaults from LatencyManager and reset native tweaks
+            // Standard Preset: Use defaults and enforce standard stability logic
             val config = latencyManager.getConfigForMode(mode)
             
-            // Fix: Reset native catch-up and pcm-target to prevent +20ms creep from previous sessions
+            // Force Standard Logic: PCM Target = 2, Catch-up = +1, PLC = Enabled
             NativeBridge.setBufferSize(config.bufferSize)
-            NativeBridge.updateAdvancedSettings(5, 1) // Default values for stability/latency
+            NativeBridge.updateAdvancedSettings(2, 1) 
+            NativeBridge.setPlcEnabled(true)
             
             sendConfigToServer(config)
             log("Mode Updated: ${mode.name}")

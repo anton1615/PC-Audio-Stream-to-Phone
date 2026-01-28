@@ -56,6 +56,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        val intent = Intent(this, AudioService::class.java).apply { action = AudioService.ACTION_UI_VISIBLE }
+        startService(intent)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        val intent = Intent(this, AudioService::class.java).apply { action = AudioService.ACTION_UI_HIDDEN }
+        startService(intent)
+    }
 }
 
 @Composable
@@ -163,6 +175,7 @@ fun MainScreen(context: Context) {
         // Advanced Settings - ONLY SHOW IF CUSTOM_SETTING IS SELECTED
         if (currentMode == LatencyMode.CUSTOM_SETTING) {
             val prefs = context.getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
+            var showAdvanced by remember { mutableStateOf(false) }
             
             var advBitrate by remember { mutableStateOf(prefs.getInt("adv_bitrate", 160000)) }
             var advComplexity by remember { mutableStateOf(prefs.getInt("adv_complexity", 8).toFloat()) }
@@ -172,80 +185,91 @@ fun MainScreen(context: Context) {
             var plcEnabled by remember { mutableStateOf(prefs.getBoolean("plc_enabled", true)) }
 
             Column(modifier = Modifier.fillMaxWidth().padding(16.dp).background(Color.White.copy(0.05f), RoundedCornerShape(16.dp)).padding(16.dp)) {
-                Text("ADVANCED TUNING", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // PLC Switch
+                // Collapsible Header
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth().selectable(selected = false, onClick = { showAdvanced = !showAdvanced }),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
-                        Text("Packet Loss Concealment", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("PLC Off = Audio Drops", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    }
-                    Switch(checked = plcEnabled, onCheckedChange = { plcEnabled = it })
+                    Text("ADVANCED TUNING", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Text(if (showAdvanced) "▲" else "▼", color = MaterialTheme.colorScheme.primary)
                 }
 
-                Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(0.1f))
+                if (showAdvanced) {
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                // Bitrate Selection
-                Text("Bitrate: ${advBitrate / 1000}k", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                val bitrates = listOf(32000, 48000, 64000, 96000, 128000, 192000, 256000, 320000)
-                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                    bitrates.forEach { br ->
-                        FilterChip(
-                            selected = advBitrate == br,
-                            onClick = { advBitrate = br },
-                            label = { Text("${br / 1000}k") },
-                            modifier = Modifier.padding(end = 4.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Complexity
-                Text("Complexity: ${advComplexity.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Slider(value = advComplexity, onValueChange = { advComplexity = it }, valueRange = 0f..10f, steps = 9)
-
-                // Total Buffer
-                Text("Total Buffer Size (Target): ${advBufferSize.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Slider(value = advBufferSize, onValueChange = { 
-                    advBufferSize = it 
-                    if (advPcmTarget > advBufferSize) advPcmTarget = advBufferSize
-                }, valueRange = 1f..20f, steps = 18)
-
-                // PCM Target
-                Text("PCM Pre-decode Target: ${advPcmTarget.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text("Recommended: 2. Higher = Better CPU stability, Lower = Larger Jitter Buffer.", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                Slider(value = advPcmTarget, onValueChange = { advPcmTarget = it }, valueRange = 1f..advBufferSize.coerceAtLeast(1f), steps = (advBufferSize.toInt() - 1).coerceAtLeast(0))
-
-                // Catch-up
-                Text("Catch-up Threshold: +${advCatchup.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Slider(value = advCatchup, onValueChange = { advCatchup = it }, valueRange = 1f..10f, steps = 8)
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = {
-                        prefs.edit().apply {
-                            putInt("adv_bitrate", advBitrate)
-                            putInt("adv_complexity", advComplexity.toInt())
-                            putInt("adv_buffer_size", advBufferSize.toInt())
-                            putInt("adv_pcm_target", advPcmTarget.toInt())
-                            putInt("adv_catchup", advCatchup.toInt())
-                            putBoolean("plc_enabled", plcEnabled)
-                            apply()
+                    // PLC Switch
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Packet Loss Concealment", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text("PLC Off = Audio Drops", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                         }
-                        AudioService.applyAdvancedSettings(
-                            advBitrate, advComplexity.toInt(), advBufferSize.toInt(), advPcmTarget.toInt(), advCatchup.toInt()
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("APPLY CHANGES")
+                        Switch(checked = plcEnabled, onCheckedChange = { plcEnabled = it })
+                    }
+
+                    Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(0.1f))
+
+                    // Bitrate Selection
+                    Text("Bitrate: ${advBitrate / 1000}k", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    val bitrates = listOf(32000, 48000, 64000, 96000, 128000, 192000, 256000, 320000)
+                    Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                        bitrates.forEach { br ->
+                            FilterChip(
+                                selected = advBitrate == br,
+                                onClick = { advBitrate = br },
+                                label = { Text("${br / 1000}k") },
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Complexity
+                    Text("Complexity: ${advComplexity.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Slider(value = advComplexity, onValueChange = { advComplexity = it }, valueRange = 0f..10f, steps = 9)
+
+                    // Total Buffer
+                    Text("Total Buffer Size (Target): ${advBufferSize.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Slider(value = advBufferSize, onValueChange = { 
+                        advBufferSize = it 
+                        if (advPcmTarget > advBufferSize) advPcmTarget = advBufferSize
+                    }, valueRange = 1f..20f, steps = 18)
+
+                    // PCM Target
+                    Text("PCM Pre-decode Target: ${advPcmTarget.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Recommended: 2. Higher = Better CPU stability, Lower = Larger Jitter Buffer.", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    Slider(value = advPcmTarget, onValueChange = { advPcmTarget = it }, valueRange = 1f..advBufferSize.coerceAtLeast(1f), steps = (advBufferSize.toInt() - 1).coerceAtLeast(0))
+
+                    // Catch-up
+                    Text("Catch-up Threshold: +${advCatchup.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Slider(value = advCatchup, onValueChange = { advCatchup = it }, valueRange = 1f..10f, steps = 8)
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            prefs.edit().apply {
+                                putInt("adv_bitrate", advBitrate)
+                                putInt("adv_complexity", advComplexity.toInt())
+                                putInt("adv_buffer_size", advBufferSize.toInt())
+                                putInt("adv_pcm_target", advPcmTarget.toInt())
+                                putInt("adv_catchup", advCatchup.toInt())
+                                putBoolean("plc_enabled", plcEnabled)
+                                apply()
+                            }
+                            AudioService.applyAdvancedSettings(
+                                advBitrate, advComplexity.toInt(), advBufferSize.toInt(), advPcmTarget.toInt(), advCatchup.toInt()
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("APPLY CHANGES")
+                    }
                 }
             }
         }
