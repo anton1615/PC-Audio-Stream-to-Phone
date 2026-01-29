@@ -42,6 +42,10 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Eco-Friendly Performance (v1.2.1)**:
     *   **Deep Power Optimization**: Automatically stops non-essential background calculations and UI updates when the screen is off, maximizing battery life.
     *   **Static Notifications**: Clean notification tray that only updates on state changes to reduce system overhead.
+*   **High Resilience Architecture (v1.2.2)**:
+    *   **Server Loop Decoupling**: Completely separates audio capture/encoding from network handling. Prevents Discord or high network traffic from jittering the 5ms audio heart-beat.
+    *   **Process Priority Elevation**: Automatically elevates `server.exe` to `HIGH_PRIORITY_CLASS` on Windows to ensure CPU scheduling dominance during heavy system load.
+    *   **Fixed Android UI Steps**: Corrected slider logic for `PCM Pre-decode Target` to ensure smooth integer-only selection.
 *   **High Performance Architecture**:
     *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
     *   **Fine-grained Locking**: Optimized mutex usage to prevent playback thread blocking during long decode operations.

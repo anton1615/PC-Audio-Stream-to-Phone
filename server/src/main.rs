@@ -9,6 +9,9 @@ use tray_icon::{
     TrayIconBuilder, TrayIconEvent, Icon
 };
 use socket2::{Socket, Domain, Type, Protocol, SockAddr};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, SetPriorityClass, HIGH_PRIORITY_CLASS, GetCurrentThreadId
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, TranslateMessage, DispatchMessageW, MSG,
     FindWindowW, ShowWindow, SW_HIDE, SW_SHOW, SW_RESTORE, SetForegroundWindow, IsWindowVisible,
@@ -51,6 +54,11 @@ enum ServerState {
     Stopping,
 }
 
+enum WorkerCommand {
+    Reconfigure(i32, i32),
+    SetRedundancy(bool),
+}
+
 fn load_embedded_icon() -> Icon {
     let icon_data = include_bytes!("../../as2p.png");
     let img = ImageReader::new(Cursor::new(icon_data)).with_guessed_format().expect("Err").decode().expect("Err").into_rgba8();
@@ -80,6 +88,17 @@ fn force_window_redraw(hwnd: HWND, ui_weak: &slint::Weak<AppWindow>) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    
+    // 1. Elevate Process Priority (Real-time Mitigation)
+    unsafe {
+        let handle = GetCurrentProcess();
+        if let Err(e) = SetPriorityClass(handle, HIGH_PRIORITY_CLASS) {
+            if args.debug { println!("{} Failed to elevate priority: {:?}", "[SYS]".red(), e); }
+        } else {
+            if args.debug { println!("{} Process priority elevated to HIGH", "[SYS]".green()); }
+        }
+    }
+
     if args.debug {
         println!("{}", ">>> AS2P V8 'PULSE' SERVER (DEBUG MODE) <<<".bold().bright_white().on_blue());
     }
@@ -88,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (ui_stats_tx, ui_stats_rx) = unbounded::<UiMessage>();
     let (cmd_tx, mut cmd_rx) = tokio_mpsc::channel::<UiCommand>(10);
     let is_ui_visible = Arc::new(AtomicBool::new(true));
-    let main_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    let main_tid = unsafe { GetCurrentThreadId() };
 
     let (ui_handle_tx, ui_handle_rx) = unbounded::<slint::Weak<AppWindow>>();
     let is_running_ui = is_running.clone();
@@ -192,26 +211,107 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         
                         if state == ServerState::Streaming && target_addr.is_some() {
                             let target = target_addr.unwrap();
-                            let mut udp_sender = UdpSender::new(socket.clone(), target, debug_mode, redundancy, drop_rate);
-                            let mut capturer = AudioCapturer::new(debug_mode).expect("Err");
-                            let mut encoder = create_encoder().expect("Err");
-                            let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
-                            let mut pcm_buffer = Vec::with_capacity(1920 * 10);
-                            let mut sequence = 0u64;
-                            let start_time = std::time::Instant::now();
+                            let (worker_cmd_tx, mut worker_cmd_rx) = tokio_mpsc::channel::<WorkerCommand>(10);
+                            let (worker_stop_tx, worker_stop_rx) = tokio::sync::oneshot::channel::<()>();
+                            
+                            let sequence_atomic = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                            let current_bitrate_atomic = Arc::new(std::sync::atomic::AtomicI32::new(current_bitrate));
+                            
+                            let socket_worker = socket.clone();
+                            let sequence_worker = sequence_atomic.clone();
+                            let bitrate_worker = current_bitrate_atomic.clone();
+                            let debug_mode_worker = debug_mode;
+                            
+                            // 0. Audio Worker Task (Decoupled Loop)
+                            let audio_handle = tokio::spawn(async move {
+                                let mut udp_sender = UdpSender::new(socket_worker, target, debug_mode_worker, redundancy, drop_rate);
+                                let mut capturer = AudioCapturer::new(debug_mode_worker).expect("Err");
+                                let mut encoder = create_encoder().expect("Err");
+                                let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
+                                let mut pcm_buffer = Vec::with_capacity(1920 * 10);
+                                let start_time = std::time::Instant::now();
+                                
+                                let mut interval = tokio::time::interval(std::time::Duration::from_millis(5));
+                                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                                // Warm-up
+                                if debug_mode_worker { println!("{} Sending initial 10 warm-up packets to {}", "[AUDIO]".green(), target); }
+                                let silence_pcm = vec![0.0f32; 1920];
+                                let silence_data = encode_frame(&mut encoder, &silence_pcm);
+                                for _ in 0..10 {
+                                    let ts = start_time.elapsed().as_millis() as u64;
+                                    let _ = udp_sender.send_audio_v8(sequence_worker.load(Ordering::SeqCst), ts, silence_data.clone()).await;
+                                    sequence_worker.fetch_add(1, Ordering::SeqCst);
+                                }
+
+                                let mut worker_stop_rx = worker_stop_rx;
+
+                                loop {
+                                    tokio::select! {
+                                        _ = interval.tick() => {
+                                            for _ in 0..10 {
+                                                match capturer.next_event() {
+                                                    CaptureEvent::Data(pcm) => {
+                                                        if pcm.is_empty() { break; }
+                                                        pcm_buffer.extend(pcm);
+                                                        while pcm_buffer.len() >= 1920 {
+                                                            let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
+                                                            let data = encode_frame(&mut encoder, &frame);
+                                                            if !data.is_empty() {
+                                                                let ts = start_time.elapsed().as_millis() as u64;
+                                                                let seq = sequence_worker.load(Ordering::SeqCst);
+                                                                let _ = udp_sender.send_audio_v8(seq, ts, data).await;
+                                                                sequence_worker.fetch_add(1, Ordering::SeqCst);
+                                                            }
+                                                        }
+                                                    }
+                                                    CaptureEvent::DeviceChanged(name) => {
+                                                        if debug_mode_worker { println!("{} Device Switched to {}", "[AUDIO]".green(), name); }
+                                                        pcm_buffer.clear();
+                                                    }
+                                                    CaptureEvent::Error(e) => {
+                                                        if debug_mode_worker { println!("{} Audio Error: {}", "[ERROR]".red(), e); }
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        cmd = worker_cmd_rx.recv() => {
+                                            match cmd {
+                                                Some(WorkerCommand::Reconfigure(br, comp)) => {
+                                                    if debug_mode_worker { println!("{} Re-configuring encoder to {}bps...", "[AUDIO]".green(), br); }
+                                                    bitrate_worker.store(br, Ordering::SeqCst);
+                                                    capturer.start_fade_out();
+                                                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                                    encoder = create_encoder().expect("Err");
+                                                    let _ = configure_encoder(&mut encoder, br, comp);
+                                                    let _ = capturer.reinitialize();
+                                                    pcm_buffer.clear();
+                                                    
+                                                    let silence_pcm = vec![0.0f32; 1920];
+                                                    let silence_data = encode_frame(&mut encoder, &silence_pcm);
+                                                    for _ in 0..10 {
+                                                        let ts = start_time.elapsed().as_millis() as u64;
+                                                        let seq = sequence_worker.load(Ordering::SeqCst);
+                                                        let _ = udp_sender.send_audio_v8(seq, ts, silence_data.clone()).await;
+                                                        sequence_worker.fetch_add(1, Ordering::SeqCst);
+                                                    }
+                                                }
+                                                Some(WorkerCommand::SetRedundancy(r)) => {
+                                                    udp_sender.redundancy_enabled = r;
+                                                }
+                                                None => break,
+                                            }
+                                        }
+                                        _ = &mut worker_stop_rx => break,
+                                    }
+                                }
+                                capturer.start_fade_out();
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            });
+
                             let mut last_activity_time = std::time::Instant::now();
                             let mut last_ui_update_time = std::time::Instant::now();
-
-                            // 0. Initial Warm-up Packets
-                            if debug_mode { println!("{} Sending initial 10 warm-up packets to {}", "[AUDIO]".green(), target); }
-                            let silence_pcm = vec![0.0f32; 1920];
-                            let silence_data = encode_frame(&mut encoder, &silence_pcm);
-                            for _ in 0..10 {
-                                let ts = start_time.elapsed().as_millis() as u64;
-                                let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
-                                sequence += 1;
-                            }
-
                             let mut last_throughput_log = std::time::Instant::now();
 
                             loop {
@@ -221,7 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             Some(UiCommand::ToggleServer) => { state = ServerState::Stopping; break; }
                                             Some(UiCommand::SetRedundancy(r)) => {
                                                 redundancy = r;
-                                                udp_sender.redundancy_enabled = r;
+                                                let _ = worker_cmd_tx.send(WorkerCommand::SetRedundancy(r)).await;
                                             }
                                             _ => {}
                                         }
@@ -241,96 +341,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if valid_bitrate == current_bitrate && valid_complexity == current_complexity {
                                                     continue;
                                                 }
-
-                                                // Hot-reload config
-                                                if debug_mode { println!("{} Re-configuring encoder to {}bps...", "[AUDIO]".green(), valid_bitrate); }
-                                                
                                                 current_bitrate = valid_bitrate;
                                                 current_complexity = valid_complexity;
-                                                
-                                                capturer.start_fade_out();
-                                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                                                
-                                                encoder = create_encoder().expect("Err");
-                                                let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
-                                                let _ = capturer.reinitialize();
-                                                
-                                                pcm_buffer.clear();
-                                                // sequence = 0; // Not resetting sequence to avoid client jump
-
-                                                let silence_pcm = vec![0.0f32; 1920];
-                                                let silence_data = encode_frame(&mut encoder, &silence_pcm);
-                                                for _ in 0..10 {
-                                                    let ts = start_time.elapsed().as_millis() as u64;
-                                                    let _ = udp_sender.send_audio_v8(sequence, ts, silence_data.clone()).await;
-                                                    sequence += 1;
-                                                }
+                                                let _ = worker_cmd_tx.send(WorkerCommand::Reconfigure(current_bitrate, current_complexity)).await;
                                             } else if len >= 12 && &buf[0..12] == b"AS2P_GOODBYE" {
                                                 if debug_mode { println!("{} Client disconnected gracefully.", "[CONN]".blue()); }
-                                                let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
                                                 state = ServerState::Listening; break;
                                             }
                                         }
                                     }
-                                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
+                                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                                         if last_activity_time.elapsed().as_secs() > 5 {
                                             if debug_mode { println!("{} Client connection timed out.", "[CONN]".red()); }
                                             state = ServerState::Listening; 
-                                            let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });
                                             break; 
                                         }
                                         
                                         if last_ui_update_time.elapsed().as_millis() >= 200 {
                                             if is_ui_visible_server.load(Ordering::SeqCst) {
                                                 let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { 
-                                                    packets: sequence, 
-                                                    bitrate: current_bitrate, 
+                                                    packets: sequence_atomic.load(Ordering::SeqCst), 
+                                                    bitrate: current_bitrate_atomic.load(Ordering::SeqCst), 
                                                     client_ip: Some(target.to_string()) 
                                                 });
                                             }
                                             last_ui_update_time = std::time::Instant::now();
                                         }
 
-                                        // Throughput Diagnostic Log (Every 1s)
-                                        if debug_mode && last_throughput_log.elapsed().as_secs() >= 1 {
-                                            println!("{} Streaming: Seq={}, Target={}", "[DIAG]".bright_black(), sequence, target);
+                                        if debug_mode && last_throughput_log.elapsed().as_secs() >= 5 {
+                                            println!("{} Streaming: Seq={}, Target={}", "[DIAG]".bright_black(), sequence_atomic.load(Ordering::SeqCst), target);
                                             last_throughput_log = std::time::Instant::now();
-                                        }
-
-                                        for _ in 0..10 {
-                                            match capturer.next_event() {
-                                                CaptureEvent::Data(pcm) => {
-                                                    if pcm.is_empty() { break; }
-                                                    pcm_buffer.extend(pcm);
-                                                    while pcm_buffer.len() >= 1920 {
-                                                        let frame: Vec<f32> = pcm_buffer.drain(0..1920).collect();
-                                                        let data = encode_frame(&mut encoder, &frame);
-                                                        if !data.is_empty() {
-                                                            let ts = start_time.elapsed().as_millis() as u64;
-                                                            let _ = udp_sender.send_audio_v8(sequence, ts, data).await;
-                                                            sequence += 1;
-                                                        }
-                                                    }
-                                                }
-                                                CaptureEvent::DeviceChanged(name) => {
-                                                    if debug_mode { println!("{} Device Switched to {}", "[AUDIO]".green(), name); }
-                                                    pcm_buffer.clear();
-                                                }
-                                                CaptureEvent::Error(e) => {
-                                                    if debug_mode { println!("{} Audio Error: {}", "[ERROR]".red(), e); }
-                                                    break;
-                                                }
-                                            }
                                         }
                                     }
                                 }
                             }
 
+                            // Cleanup Worker
+                            let _ = worker_stop_tx.send(());
+                            let _ = audio_handle.await;
+
                             if state == ServerState::Stopping {
                                 if debug_mode { println!("{} Stopping Stream (Graceful)...", "[CONN]".blue()); }
-                                capturer.start_fade_out();
-                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                                let _ = udp_sender.send_control("AS2P_GOODBYE").await;
+                                let _ = UdpSender::new(socket.clone(), target, false, false, 0.0).send_control("AS2P_GOODBYE").await;
                                 state = ServerState::Idle;
                             }
                             let _ = ui_stats_tx_server.send(UiMessage::UpdateStats { packets: 0, bitrate: 0, client_ip: None });

@@ -243,7 +243,7 @@ fun MainScreen(context: Context) {
                     // PCM Target
                     Text("PCM Pre-decode Target: ${advPcmTarget.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text("Recommended: 2. Higher = Better CPU stability, Lower = Larger Jitter Buffer.", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    Slider(value = advPcmTarget, onValueChange = { advPcmTarget = it }, valueRange = 1f..advBufferSize.coerceAtLeast(1f), steps = (advBufferSize.toInt() - 1).coerceAtLeast(0))
+                    Slider(value = advPcmTarget, onValueChange = { advPcmTarget = it }, valueRange = 1f..advBufferSize.coerceAtLeast(1f), steps = (advBufferSize.toInt() - 2).coerceAtLeast(0))
 
                     // Catch-up
                     Text("Catch-up Threshold: +${advCatchup.toInt()}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
