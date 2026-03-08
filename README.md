@@ -6,6 +6,12 @@
 
 **PC Audio Stream to Phone (AS2P)** is a specialized, open-source solution for real-time, low-latency audio streaming from your Windows PC to an Android device.
 
+## Security Notice
+
+> This project should currently be treated as a prototype-grade implementation rather than a hardened production audio transport.
+> Use it only on trusted networks, and do not assume the current pairing or network behavior is suitable for hostile or shared environments without additional hardening.
+> Review release-signing, network exposure, and deployment assumptions before distributing builds more broadly.
+
 ## Screenshots
 <p align="center">
   <img src="screehshot_server.png" width="300" />
