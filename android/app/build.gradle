@@ -31,6 +31,22 @@ android {
         }
     }
 
+    // Optional offline builds: point CMake's FetchContent at sources that are
+    // already on disk, so Oboe/Opus do not have to be downloaded.
+    // Configure it in your user-level ~/.gradle/gradle.properties (never committed):
+    //   as2p.oboeSourceDir=C:/path/to/oboe
+    //   as2p.opusSourceDir=C:/path/to/opus
+    // Without these properties the normal FetchContent download is used.
+    def cmakeArgs = [
+            "-DANDROID_STL=c++_static",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code",
+            "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code",
+    ]
+    def oboeSourceDir = project.findProperty("as2p.oboeSourceDir")
+    if (oboeSourceDir) cmakeArgs << "-DFETCHCONTENT_SOURCE_DIR_OBOE=${oboeSourceDir}"
+    def opusSourceDir = project.findProperty("as2p.opusSourceDir")
+    if (opusSourceDir) cmakeArgs << "-DFETCHCONTENT_SOURCE_DIR_OPUS=${opusSourceDir}"
+
     defaultConfig {
         applicationId "com.example.audiobtbridge"
         minSdk 28
@@ -46,9 +62,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17"
-                arguments "-DANDROID_STL=c++_static",
-                          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code",
-                          "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,separate-code"
+                arguments(*cmakeArgs)
             }
         }
     }
