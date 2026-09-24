@@ -66,6 +66,7 @@ There are several audio streaming solutions available on the market (e.g., Audio
     *   **UDP Port Unification**: Uses a single port (12345) for all traffic to maximize firewall penetration.
     *   **Jitter Buffer Catch-up**: Automatically drops old packets to maintain a strict latency target.
     *   **Double-Send Redundancy**: Server supports optional double-send mode to mitigate Wi-Fi interference.
+    *   **Multi-Network Discovery (USB Tethering)**: Discovery packets are broadcast on every active network interface, so the PC is found even when it is reached over USB tethering instead of Wi-Fi.
 *   **High Fidelity**: Uses the **Opus Codec** at 48kHz Stereo with **PLC (Packet Loss Concealment)** support.
 *   **Anti-Clipping**: 10ms linear Fade-out/Fade-in on all transitions (Start/Stop/Device Change).
 *   **CPU Efficient**: Optimized Windows server; stops UI updates when hidden to consume < 0.1% CPU.
@@ -127,6 +128,20 @@ The server communicates over **UDP Port 12345**.
 ### 3. Adjust Presets
 Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALITY** depending on your Wi-Fi stability.
 
+### 4. USB Tethering (Wi-Fi-Free Setup)
+If Wi-Fi is congested, unavailable, or you just want a dedicated cable link, you can run AS2P over the USB network created by Android's USB tethering:
+
+1.  Connect the phone to the PC with a USB cable.
+2.  On the phone, enable **USB tethering** (Settings → Network & internet → Hotspot & tethering → USB tethering).
+3.  Windows will bring up a new network adapter and take an IP address from the phone automatically.
+4.  Open the Android app and tap **CONNECT**. The client broadcasts discovery on all interfaces, so it will find the server over the USB link even though the default route (Wi-Fi / mobile data) points elsewhere.
+5.  Make sure UDP port **12345** is allowed through Windows Firewall (see [Firewall Configuration](#2-firewall-configuration)).
+
+**Notes**
+*   No Wi-Fi is required; audio still travels over UDP port 12345, just routed through the USB network.
+*   Windows may label the tethered adapter as **"No internet access"**. This is expected and harmless — AS2P only needs local connectivity.
+*   If the client never connects, set the tethered adapter's Windows network profile to **Private**. A **Public** profile blocks the inbound discovery reply and audio packets.
+
 ## Troubleshooting
 *   **Rapid Preset Switching**: Switching presets too quickly (multiple clicks in a second) may cause the server to fall behind in reconfiguration, potentially leading to a temporary loss of audio streaming. If this happens, wait a few seconds or click **STOP** then **CONNECT** again.
 *   **Server White Background**: Occasionally, the server window may display a plain white background after running for a long period. This is a known rendering issue in the current prototype. Restarting the server or minimizing/restoring the window usually resolves it.
@@ -134,5 +149,6 @@ Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALIT
 *   **Zombie Icon**: Fixed in V8. Clicking Quit now removes the tray icon immediately.
 *   **Mechanical Noise**: Ensure Windows is set to 48kHz, though the server now resamples automatically.
 *   **No Audio Captured**: Ensure your PC is playing sound through the default output device.
+*   **Client Cannot Find Server over USB Tethering**: Confirm the Android client is up to date (multi-network discovery) and that the tethered Windows adapter is set to a **Private** network profile, since a **Public** profile silently drops inbound UDP 12345.
 ## License
 Licensed under the [MIT License](LICENSE).
