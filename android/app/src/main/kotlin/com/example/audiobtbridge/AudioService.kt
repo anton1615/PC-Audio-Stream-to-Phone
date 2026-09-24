@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import com.example.audiobtbridge.latency.LatencyManager
@@ -461,22 +462,46 @@ class AudioService : Service() {
 
         // Discovery Loop
         serviceScope.launch(Dispatchers.IO) {
-            val socket = DatagramSocket()
-            socket.broadcast = true
             val msg = "AS2P_DISCOVER".toByteArray()
-            val packet = DatagramPacket(msg, msg.size, InetAddress.getByName("255.255.255.255"), 12345)
             log("Discovery Loop Started (Interval: 1000ms)")
-            
+
             while (isRunning) {
                 if (serverAddress == null) {
-                    try { 
-                        socket.send(packet)
-                        // log("Sent Discovery...") // Too spammy
-                    } catch (e: Exception) {}
+                    broadcastDiscovery(msg)
                 }
                 delay(1000)
             }
-            socket.close()
+        }
+    }
+
+    /**
+     * Sends the discovery packet through both discovery paths, so whichever
+     * network the PC ends up on is covered automatically:
+     *   1. Limited broadcast (255.255.255.255) on the default network.
+     *   2. Subnet broadcast on every usable interface.
+     * Path 2 is what makes a second network work (e.g. USB tethering): an
+     * unbound socket sending to 255.255.255.255 is routed via the default
+     * network only, while an interface's own broadcast address follows that
+     * interface's route.
+     */
+    private fun broadcastDiscovery(msg: ByteArray) {
+        val targets = LinkedHashSet<InetAddress>()
+        try { targets.add(InetAddress.getByName("255.255.255.255")) } catch (e: Exception) {}
+        try {
+            for (nif in NetworkInterface.getNetworkInterfaces()) {
+                if (!nif.isUp || nif.isLoopback) continue
+                for (ia in nif.interfaceAddresses) {
+                    ia.broadcast?.let { targets.add(it) }
+                }
+            }
+        } catch (e: Exception) {}
+        for (addr in targets) {
+            try {
+                DatagramSocket().use { socket ->
+                    socket.broadcast = true
+                    socket.send(DatagramPacket(msg, msg.size, addr, 12345))
+                }
+            } catch (e: Exception) {}
         }
     }
 
