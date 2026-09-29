@@ -155,22 +155,31 @@ fun MainScreen(context: Context) {
             }
         }
         
-        if (isSearching && serviceState) {
-            Spacer(modifier = Modifier.height(8.dp))
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary)
-            Text("Searching for Server...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-        }
-
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Latency Info Card
+        // Latency Info Card.
+        // The "searching" state is rendered inside this card — as the status line plus a
+        // thin bar overlaid on the card's top edge — so it adds no layout height. It used
+        // to be a separate line under the title, which pushed the whole screen past one page.
+        val isSearchingForServer = isSearching && serviceState
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
-            Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = if (serviceState) "ACTIVE" else "IDLE", color = if (serviceState) Color.Green else Color.Gray)
-                Text(text = "%.1f".format(latency), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold)
-                Text(text = "LATENCY (MS)", style = MaterialTheme.typography.labelSmall)
-                Spacer(modifier = Modifier.height(16.dp))
-                LatencyChart(history = history)
+            Box {
+                Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (isSearchingForServer) "SEARCHING FOR SERVER..." else if (serviceState) "ACTIVE" else "IDLE",
+                        color = if (isSearchingForServer) MaterialTheme.colorScheme.primary else if (serviceState) Color.Green else Color.Gray
+                    )
+                    Text(text = "%.1f".format(latency), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold)
+                    Text(text = "LATENCY (MS)", style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LatencyChart(history = history)
+                }
+                if (isSearchingForServer) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(3.dp).align(Alignment.TopCenter),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
 
