@@ -353,10 +353,9 @@ class AudioService : Service() {
                 var lastReceivedSeq = -1L
 
         serviceScope.launch(Dispatchers.IO) {
+            val socket = bindReceiverSocket()
+            if (socket == null) return@launch
             try {
-                val socket = DatagramSocket(12345)
-                socket.receiveBufferSize = 1024 * 1024
-                udpSocket = socket
                 val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
                 
@@ -449,9 +448,10 @@ class AudioService : Service() {
                         }
                     }
                 }
-            } catch (e: Exception) { 
-                if (isRunning) log("Socket Error: ${e.message}") 
-            } finally { udpSocket?.close() }
+            } finally {
+                socket.close()
+                if (udpSocket === socket) udpSocket = null
+            }
         }
 
         // Heartbeat Loop
@@ -480,6 +480,41 @@ class AudioService : Service() {
                 delay(1000)
             }
         }
+    }
+
+    /**
+     * Binds the UDP receiver socket, retrying briefly on EADDRINUSE.
+     *
+     * A rapid STOP -> CONNECT cycle starts the new service instance while the
+     * previous one is still tearing down. Its receiver coroutine is parked in a
+     * blocking receive() and can hold port 12345 for a moment after close(),
+     * so a single bind attempt fails with "EADDRINUSE" and the new instance
+     * ends up running with no socket at all: the UI stays on "SEARCHING FOR
+     * SERVER..." and only another stop/start cycle recovers it.
+     *
+     * @return the bound socket, or null if the port never became available.
+     */
+    private fun bindReceiverSocket(): DatagramSocket? {
+        val attempts = 30
+        repeat(attempts) { attempt ->
+            // Drop a socket left over from an earlier start in this same instance.
+            udpSocket?.close()
+            udpSocket = null
+            try {
+                val socket = DatagramSocket(12345)
+                socket.receiveBufferSize = 1024 * 1024
+                udpSocket = socket
+                return socket
+            } catch (e: Exception) {
+                if (attempt == 0) log("Port 12345 busy, retrying...")
+                if (attempt == attempts - 1) {
+                    if (isRunning) log("Socket Error: ${e.message}")
+                    return null
+                }
+                Thread.sleep(150)
+            }
+        }
+        return null
     }
 
     /**
@@ -591,6 +626,11 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        // stopSelf() only schedules the teardown: without this the coroutines
+        // launched by this instance keep running after onDestroy returns, and the
+        // receiver loop can still be parked in receive() holding UDP 12345 when
+        // the next instance tries to bind it (EADDRINUSE).
+        serviceScope.cancel()
         sendGoodbyeToServer() // 主動告訴 Server 我要斷開了
         NativeBridge.stopNative()
         udpSocket?.close()
