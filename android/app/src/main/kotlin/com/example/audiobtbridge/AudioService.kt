@@ -40,6 +40,7 @@ class AudioService : Service() {
     private var currentActiveConfig: AudioConfig? = null
     private var isUiVisible = false
     private var lastNotificationContent: String? = null
+    private var currentNotification: Notification? = null
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -152,6 +153,19 @@ class AudioService : Service() {
             .build()
 
         nm.notify(1, notification)
+        currentNotification = notification
+    }
+
+    /**
+     * Puts the service in the foreground with the notification we last built.
+     * Must be called once for every startForegroundService() request, see the
+     * ACTION_START branch in onStartCommand().
+     */
+    private fun promoteToForeground(notification: Notification) {
+        currentNotification = notification
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else startForeground(1, notification)
     }
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -221,9 +235,28 @@ class AudioService : Service() {
                 // the latency readout stays at 0.
                 isUiVisible = true
                 startAudioService()
+            } else {
+                // Already streaming. A second ACTION_START still reaches us whenever the
+                // CONNECT button is tapped twice before Compose recomposes, and Android
+                // requires a startForeground() for *every* startForegroundService() call:
+                // skipping it crashes the app ~5s later with
+                // ForegroundServiceDidNotStartInTimeException. Re-asserting the
+                // foreground state is harmless when it is already foreground.
+                currentNotification?.let { promoteToForeground(it) }
             }
             ACTION_STOP -> {
                 // Do not clear serverAddress here, as it's needed by sendGoodbyeToServer() in onDestroy()
+                //
+                // A stop can also be delivered through startForegroundService(), which creates a
+                // fresh instance that has never been foreground. Android enforces the
+                // startForeground() contract per request and tears such a service down with
+                // "Bringing down service while still waiting for start foreground", then kills
+                // the app ~5s later with ForegroundServiceDidNotStartInTimeException. Satisfy
+                // the contract before stopping.
+                if (!isRunning) {
+                    updateNotification("Stopping...")
+                    currentNotification?.let { promoteToForeground(it) }
+                }
                 stopSelf()
             }
             ACTION_UPDATE_MODE -> {
@@ -278,6 +311,7 @@ class AudioService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else startForeground(1, notification)
+        currentNotification = notification
         
         isRunning = true
         _serviceState.value = true

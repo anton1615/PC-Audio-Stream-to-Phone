@@ -336,10 +336,14 @@ fun MainScreen(context: Context) {
 
         Button(
             onClick = {
+                // Read the state once: the action and the start API must agree, or we
+                // could send ACTION_STOP through startForegroundService() and the
+                // service would be killed for never calling startForeground().
+                val isStreaming = serviceState
                 val intent = Intent(context, AudioService::class.java).apply {
-                    action = if (serviceState) AudioService.ACTION_STOP else AudioService.ACTION_START
+                    action = if (isStreaming) AudioService.ACTION_STOP else AudioService.ACTION_START
                 }
-                if (serviceState) context.startService(intent) else context.startForegroundService(intent)
+                if (isStreaming) context.startService(intent) else context.startForegroundService(intent)
             },
             modifier = Modifier.fillMaxWidth().height(64.dp),
             shape = RoundedCornerShape(32.dp),
