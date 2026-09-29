@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.net.BindException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -517,20 +518,31 @@ class AudioService : Service() {
     }
 
     /**
-     * Binds the UDP receiver socket, retrying briefly on EADDRINUSE.
+     * Binds the UDP receiver socket, waiting out a port that a previous service
+     * instance has not released yet.
      *
      * A rapid STOP -> CONNECT cycle starts the new service instance while the
      * previous one is still tearing down. Its receiver coroutine is parked in a
-     * blocking receive() and can hold port 12345 for a moment after close(),
-     * so a single bind attempt fails with "EADDRINUSE" and the new instance
-     * ends up running with no socket at all: the UI stays on "SEARCHING FOR
-     * SERVER..." and only another stop/start cycle recovers it.
+     * blocking receive(), and a blocked recvfrom keeps its own reference to the
+     * socket, so the kernel does not free port 12345 until that thread unwinds -
+     * tens of milliseconds after onDestroy() closed it. A single bind attempt
+     * loses that race with "EADDRINUSE", and giving up would leave the service
+     * running with no socket at all: no discovery, no audio, and the UI stuck on
+     * "SEARCHING FOR SERVER..." until the user toggles again.
      *
-     * @return the bound socket, or null if the port never became available.
+     * So keep retrying for as long as the service is meant to be running. The
+     * first attempt is immediate and the delay then backs off, so a port that is
+     * genuinely taken does not spin.
+     *
+     * @return the bound socket, or null if the service stopped while waiting.
      */
-    private fun bindReceiverSocket(): DatagramSocket? {
-        val attempts = 30
-        repeat(attempts) { attempt ->
+    private suspend fun bindReceiverSocket(): DatagramSocket? {
+        val maxDelayMs = 1000L
+        var retryDelayMs = 150L
+        var failures = 0
+        var lastLogTime = 0L
+
+        while (isRunning) {
             // Drop a socket left over from an earlier start in this same instance.
             udpSocket?.close()
             udpSocket = null
@@ -538,14 +550,24 @@ class AudioService : Service() {
                 val socket = DatagramSocket(12345)
                 socket.receiveBufferSize = 1024 * 1024
                 udpSocket = socket
+                if (failures > 0) log("Port 12345 acquired after $failures retries")
                 return socket
             } catch (e: Exception) {
-                if (attempt == 0) log("Port 12345 busy, retrying...")
-                if (attempt == attempts - 1) {
-                    if (isRunning) log("Socket Error: ${e.message}")
+                // Only a taken port is worth waiting for; anything else is a real
+                // failure and retrying would just spin on it.
+                if (e !is BindException && e.message?.contains("EADDRINUSE") != true) {
+                    log("Socket Error: ${e.message}")
                     return null
                 }
-                Thread.sleep(150)
+                failures++
+                val now = System.currentTimeMillis()
+                if (failures == 1 || now - lastLogTime > 10_000) {
+                    log(if (failures == 1) "Port 12345 busy, retrying..."
+                        else "Port 12345 still busy, retrying...")
+                    lastLogTime = now
+                }
+                delay(retryDelayMs)
+                retryDelayMs = (retryDelayMs * 2).coerceAtMost(maxDelayMs)
             }
         }
         return null
