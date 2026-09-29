@@ -213,7 +213,15 @@ class AudioService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> if (!isRunning) startAudioService()
+            ACTION_START -> if (!isRunning) {
+                // stopSelf() tears the service instance down, so a reconnect runs on a brand
+                // new instance whose isUiVisible is back to its false default. ACTION_START
+                // only ever comes from the CONNECT button, so the UI is on screen by
+                // definition here — re-assert it, otherwise the stats loop never runs and
+                // the latency readout stays at 0.
+                isUiVisible = true
+                startAudioService()
+            }
             ACTION_STOP -> {
                 // Do not clear serverAddress here, as it's needed by sendGoodbyeToServer() in onDestroy()
                 stopSelf()
