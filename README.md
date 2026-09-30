@@ -14,8 +14,8 @@
 
 ## Screenshots
 <p align="center">
-  <img src="screehshot_server.png" width="300" />
-  <img src="screehshot_client.png" width="300" />
+  <img src="screenshot_server.png" width="300" />
+  <img src="screenshot_client.png" width="300" />
 </p>
 
 ### ⚠️ Special Disclaimer
