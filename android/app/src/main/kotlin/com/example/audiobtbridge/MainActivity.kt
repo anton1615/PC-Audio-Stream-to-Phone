@@ -1,12 +1,16 @@
 package com.example.audiobtbridge
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -26,6 +30,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audiobtbridge.latency.LatencyMode
@@ -91,6 +96,33 @@ fun LatencyChart(history: List<Float>, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Opens the system tethering settings screen.
+ *
+ * A normal app cannot switch USB tethering on itself — that needs the system-only
+ * TETHER_PRIVILEGED permission — so the most we can do is deep-link the user to the
+ * screen and let them flip the switch.
+ *
+ * Settings.ACTION_TETHER_SETTINGS is @hide in the SDK, so it is used as a literal,
+ * followed by progressively broader public actions for devices that don't handle it.
+ */
+private fun openTetheringSettings(context: Context) {
+    val actions = listOf(
+        "android.settings.TETHER_SETTINGS",
+        Settings.ACTION_WIRELESS_SETTINGS,
+        Settings.ACTION_SETTINGS
+    )
+    for (action in actions) {
+        try {
+            context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return
+        } catch (e: ActivityNotFoundException) {
+            // Not handled on this device; fall through to the next, broader action.
+        }
+    }
+    Toast.makeText(context, "Could not open tethering settings", Toast.LENGTH_SHORT).show()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(context: Context) {
@@ -103,25 +135,51 @@ fun MainScreen(context: Context) {
 
     Column(modifier = Modifier.fillMaxSize().padding(20.dp).verticalScroll(scrollState), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("PC Audio Stream to Phone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "PC Audio Stream to Phone",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            // Shortcut for the USB-tethering workflow: jump to the system screen, enable
+            // USB tethering there, then come back and tap CONNECT.
+            OutlinedButton(
+                onClick = { openTetheringSettings(context) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+            ) {
+                Text("USB TETHERING", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            }
         }
         
-        if (isSearching && serviceState) {
-            Spacer(modifier = Modifier.height(8.dp))
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary)
-            Text("Searching for Server...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-        }
-
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Latency Info Card
+        // Latency Info Card.
+        // The "searching" state is rendered inside this card — as the status line plus a
+        // thin bar overlaid on the card's top edge — so it adds no layout height. It used
+        // to be a separate line under the title, which pushed the whole screen past one page.
+        val isSearchingForServer = isSearching && serviceState
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
-            Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = if (serviceState) "ACTIVE" else "IDLE", color = if (serviceState) Color.Green else Color.Gray)
-                Text(text = "%.1f".format(latency), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold)
-                Text(text = "LATENCY (MS)", style = MaterialTheme.typography.labelSmall)
-                Spacer(modifier = Modifier.height(16.dp))
-                LatencyChart(history = history)
+            Box {
+                Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (isSearchingForServer) "SEARCHING FOR SERVER..." else if (serviceState) "ACTIVE" else "IDLE",
+                        color = if (isSearchingForServer) MaterialTheme.colorScheme.primary else if (serviceState) Color.Green else Color.Gray
+                    )
+                    Text(text = "%.1f".format(latency), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold)
+                    Text(text = "LATENCY (MS)", style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LatencyChart(history = history)
+                }
+                if (isSearchingForServer) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(3.dp).align(Alignment.TopCenter),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
 
@@ -278,10 +336,14 @@ fun MainScreen(context: Context) {
 
         Button(
             onClick = {
+                // Read the state once: the action and the start API must agree, or we
+                // could send ACTION_STOP through startForegroundService() and the
+                // service would be killed for never calling startForeground().
+                val isStreaming = serviceState
                 val intent = Intent(context, AudioService::class.java).apply {
-                    action = if (serviceState) AudioService.ACTION_STOP else AudioService.ACTION_START
+                    action = if (isStreaming) AudioService.ACTION_STOP else AudioService.ACTION_START
                 }
-                if (serviceState) context.startService(intent) else context.startForegroundService(intent)
+                if (isStreaming) context.startService(intent) else context.startForegroundService(intent)
             },
             modifier = Modifier.fillMaxWidth().height(64.dp),
             shape = RoundedCornerShape(32.dp),

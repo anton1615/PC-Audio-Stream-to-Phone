@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.net.BindException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -40,6 +41,7 @@ class AudioService : Service() {
     private var currentActiveConfig: AudioConfig? = null
     private var isUiVisible = false
     private var lastNotificationContent: String? = null
+    private var currentNotification: Notification? = null
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -152,6 +154,19 @@ class AudioService : Service() {
             .build()
 
         nm.notify(1, notification)
+        currentNotification = notification
+    }
+
+    /**
+     * Puts the service in the foreground with the notification we last built.
+     * Must be called once for every startForegroundService() request, see the
+     * ACTION_START branch in onStartCommand().
+     */
+    private fun promoteToForeground(notification: Notification) {
+        currentNotification = notification
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else startForeground(1, notification)
     }
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -213,9 +228,36 @@ class AudioService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> if (!isRunning) startAudioService()
+            ACTION_START -> if (!isRunning) {
+                // stopSelf() tears the service instance down, so a reconnect runs on a brand
+                // new instance whose isUiVisible is back to its false default. ACTION_START
+                // only ever comes from the CONNECT button, so the UI is on screen by
+                // definition here — re-assert it, otherwise the stats loop never runs and
+                // the latency readout stays at 0.
+                isUiVisible = true
+                startAudioService()
+            } else {
+                // Already streaming. A second ACTION_START still reaches us whenever the
+                // CONNECT button is tapped twice before Compose recomposes, and Android
+                // requires a startForeground() for *every* startForegroundService() call:
+                // skipping it crashes the app ~5s later with
+                // ForegroundServiceDidNotStartInTimeException. Re-asserting the
+                // foreground state is harmless when it is already foreground.
+                currentNotification?.let { promoteToForeground(it) }
+            }
             ACTION_STOP -> {
                 // Do not clear serverAddress here, as it's needed by sendGoodbyeToServer() in onDestroy()
+                //
+                // A stop can also be delivered through startForegroundService(), which creates a
+                // fresh instance that has never been foreground. Android enforces the
+                // startForeground() contract per request and tears such a service down with
+                // "Bringing down service while still waiting for start foreground", then kills
+                // the app ~5s later with ForegroundServiceDidNotStartInTimeException. Satisfy
+                // the contract before stopping.
+                if (!isRunning) {
+                    updateNotification("Stopping...")
+                    currentNotification?.let { promoteToForeground(it) }
+                }
                 stopSelf()
             }
             ACTION_UPDATE_MODE -> {
@@ -270,6 +312,7 @@ class AudioService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else startForeground(1, notification)
+        currentNotification = notification
         
         isRunning = true
         _serviceState.value = true
@@ -345,10 +388,9 @@ class AudioService : Service() {
                 var lastReceivedSeq = -1L
 
         serviceScope.launch(Dispatchers.IO) {
+            val socket = bindReceiverSocket()
+            if (socket == null) return@launch
             try {
-                val socket = DatagramSocket(12345)
-                socket.receiveBufferSize = 1024 * 1024
-                udpSocket = socket
                 val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
                 
@@ -441,9 +483,10 @@ class AudioService : Service() {
                         }
                     }
                 }
-            } catch (e: Exception) { 
-                if (isRunning) log("Socket Error: ${e.message}") 
-            } finally { udpSocket?.close() }
+            } finally {
+                socket.close()
+                if (udpSocket === socket) udpSocket = null
+            }
         }
 
         // Heartbeat Loop
@@ -472,6 +515,62 @@ class AudioService : Service() {
                 delay(1000)
             }
         }
+    }
+
+    /**
+     * Binds the UDP receiver socket, waiting out a port that a previous service
+     * instance has not released yet.
+     *
+     * A rapid STOP -> CONNECT cycle starts the new service instance while the
+     * previous one is still tearing down. Its receiver coroutine is parked in a
+     * blocking receive(), and a blocked recvfrom keeps its own reference to the
+     * socket, so the kernel does not free port 12345 until that thread unwinds -
+     * tens of milliseconds after onDestroy() closed it. A single bind attempt
+     * loses that race with "EADDRINUSE", and giving up would leave the service
+     * running with no socket at all: no discovery, no audio, and the UI stuck on
+     * "SEARCHING FOR SERVER..." until the user toggles again.
+     *
+     * So keep retrying for as long as the service is meant to be running. The
+     * first attempt is immediate and the delay then backs off, so a port that is
+     * genuinely taken does not spin.
+     *
+     * @return the bound socket, or null if the service stopped while waiting.
+     */
+    private suspend fun bindReceiverSocket(): DatagramSocket? {
+        val maxDelayMs = 1000L
+        var retryDelayMs = 150L
+        var failures = 0
+        var lastLogTime = 0L
+
+        while (isRunning) {
+            // Drop a socket left over from an earlier start in this same instance.
+            udpSocket?.close()
+            udpSocket = null
+            try {
+                val socket = DatagramSocket(12345)
+                socket.receiveBufferSize = 1024 * 1024
+                udpSocket = socket
+                if (failures > 0) log("Port 12345 acquired after $failures retries")
+                return socket
+            } catch (e: Exception) {
+                // Only a taken port is worth waiting for; anything else is a real
+                // failure and retrying would just spin on it.
+                if (e !is BindException && e.message?.contains("EADDRINUSE") != true) {
+                    log("Socket Error: ${e.message}")
+                    return null
+                }
+                failures++
+                val now = System.currentTimeMillis()
+                if (failures == 1 || now - lastLogTime > 10_000) {
+                    log(if (failures == 1) "Port 12345 busy, retrying..."
+                        else "Port 12345 still busy, retrying...")
+                    lastLogTime = now
+                }
+                delay(retryDelayMs)
+                retryDelayMs = (retryDelayMs * 2).coerceAtMost(maxDelayMs)
+            }
+        }
+        return null
     }
 
     /**
@@ -583,6 +682,11 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        // stopSelf() only schedules the teardown: without this the coroutines
+        // launched by this instance keep running after onDestroy returns, and the
+        // receiver loop can still be parked in receive() holding UDP 12345 when
+        // the next instance tries to bind it (EADDRINUSE).
+        serviceScope.cancel()
         sendGoodbyeToServer() // 主動告訴 Server 我要斷開了
         NativeBridge.stopNative()
         udpSocket?.close()

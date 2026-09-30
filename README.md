@@ -41,7 +41,7 @@ There are several audio streaming solutions available on the market (e.g., Audio
 *   **Zero Bloat**: No ads, no tracking, no complex setup. Just connect and listen.
 *   **Modern Visual Interface**: 
     *   **Windows**: Centralized, lightweight interface with "Run at Startup" support.
-    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart**, **MediaStyle Notification**, and **Collapsible Advanced Tuning**.
+    *   **Android**: Material Design 3 Dark Theme with a **Dynamic Latency Chart**, **MediaStyle Notification**, **Collapsible Advanced Tuning**, and a one-tap **USB TETHERING** shortcut in the header that opens the system tethering screen.
 *   **Custom Setting Preset (v1.2.0)**:
     *   **Advanced Tuning UI**: Complete control over Bitrate, Buffer Size, Catch-up Threshold, and PCM Pre-decode Target.
     *   **Demand-based Decoding**: Tailor the CPU vs. Network stability balance by adjusting the PCM inventory target.
@@ -132,7 +132,7 @@ Choose between **LOW_LATENCY**, **BALANCE**, **HIGH_QUALITY**, and **BEST_QUALIT
 If Wi-Fi is congested, unavailable, or you just want a dedicated cable link, you can run AS2P over the USB network created by Android's USB tethering:
 
 1.  Connect the phone to the PC with a USB cable.
-2.  On the phone, enable **USB tethering** (Settings → Network & internet → Hotspot & tethering → USB tethering).
+2.  On the phone, tap the **USB TETHERING** button at the top of the app — it opens the system tethering screen — and enable **USB tethering** there.
 3.  Windows will bring up a new network adapter and take an IP address from the phone automatically.
 4.  Open the Android app and tap **CONNECT**. The client broadcasts discovery on all interfaces, so it will find the server over the USB link even though the default route (Wi-Fi / mobile data) points elsewhere.
 5.  Make sure UDP port **12345** is allowed through Windows Firewall (see [Firewall Configuration](#2-firewall-configuration)).
