@@ -56,7 +56,7 @@
 
 ## 💡 Why AS2P?
 
-There are several audio streaming solutions on the market (e.g., SoundWire, VBAN), but many are:
+There are several audio streaming solutions on the market (e.g., AudioRelay, SoundWire, VBAN), but many are:
 
 - 🔒 **Proprietary/Closed Source**: You don't know what's happening under the hood.
 - 💰 **Paid/Subscription Based**: Features like high-quality audio or low latency are often locked behind a paywall.
