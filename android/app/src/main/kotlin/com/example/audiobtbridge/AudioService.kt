@@ -8,7 +8,9 @@ import android.content.IntentFilter
 import android.bluetooth.BluetoothDevice
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.*
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -24,6 +26,7 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicInteger
 import com.example.audiobtbridge.latency.LatencyManager
 import com.example.audiobtbridge.latency.LatencyMode
 import com.example.audiobtbridge.latency.AudioConfig
@@ -42,6 +45,19 @@ class AudioService : Service() {
     private var isUiVisible = false
     private var lastNotificationContent: String? = null
     private var currentNotification: Notification? = null
+
+    // Power management. The CPU must stay awake while streaming, and the Wi-Fi
+    // stack drops multicast/broadcast frames unless a MulticastLock is held —
+    // without it the discovery packets stop arriving once the screen turns off.
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    // Set while the service is streaming, so the native resend callback can find
+    // the socket and server address without racing against onDestroy.
+    @Volatile private var resendSocket: DatagramSocket? = null
+    @Volatile private var resendTarget: InetAddress? = null
+    private val pendingResendTicks = AtomicInteger(0)
     
     companion object {
         private val _serviceState = MutableStateFlow(false)
@@ -74,6 +90,23 @@ class AudioService : Service() {
         const val EXTRA_PCM_TARGET = "EXTRA_PCM_TARGET"
         const val EXTRA_CATCHUP = "EXTRA_CATCHUP"
         private const val CHANNEL_ID = "audio_stream_channel"
+
+        // Server packet header (v9), measured after the 10-byte "AS2P_AUDIO" prefix.
+        // tick(8) + send_ts_ms(8) + flags(8) + seq(4)
+        const val AUDIO_HEADER_LEN = 28 + 10
+        private const val PACKET_HEADER_LEN = 28
+        private const val FLAG_RETRANSMIT = 1L
+
+        // Client -> server: "AS2P_RESEND" + tick(8)
+        private const val RESEND_PREFIX = "AS2P_RESEND"
+        // Client -> server: "AS2P_STATS" + 5 x u32 (max latency ms, avg latency ms,
+        // late percent x100, loss percent x100, underflow count)
+        private const val STATS_PREFIX = "AS2P_STATS"
+        private const val STATS_INTERVAL_MS = 1000L
+        private const val FRAME_MS = 20.0f
+
+        /** Cap on concurrently outstanding resend requests. */
+        private const val MAX_INFLIGHT_RESENDS = 16
 
         fun setModeOffline(mode: LatencyMode) { _latencyModeFlow.value = mode }
         
@@ -317,7 +350,26 @@ class AudioService : Service() {
         isRunning = true
         _serviceState.value = true
         _isSearchingFlow.value = true
+
+        // Keep the CPU and the Wi-Fi multicast filter awake for the whole session.
+        acquirePowerLocks()
+        if (!requestAudioFocus()) {
+            log("Audio focus denied. Stopping...")
+            stopSelf()
+            return
+        }
+
+        // Dedicated socket for resend requests and stats. The receiver socket is
+        // parked in a blocking receive() and must not be shared.
+        try {
+            resendSocket = DatagramSocket()
+        } catch (e: Exception) {
+            Log.w("AS2P_Service", "Resend socket unavailable: ${e.message}")
+            resendSocket = null
+        }
+
         NativeBridge.initNative()
+        NativeBridge.setResendCallback(ResendRequester { tick -> requestResend(tick) })
         
         // --- Sync Settings to Native layer ---
         val prefs = getSharedPreferences("AS2P_Prefs", Context.MODE_PRIVATE)
@@ -356,7 +408,7 @@ class AudioService : Service() {
                                                     } else {
                                                         log("Connection lost (Timeout). Back to searching...")
                                                         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f).build())
-                                                        serverAddress = null
+                                                        clearServerConnection()
                                                         _isSearchingFlow.value = true
                                                         configRetryCount = 0
                                                     }
@@ -371,7 +423,7 @@ class AudioService : Service() {
         serviceScope.launch {
             while (isRunning) {
                 if (isUiVisible) {
-                    val latency = NativeBridge.getBufferDepth() * 20.0f
+                    val latency = NativeBridge.getBufferDepth() * FRAME_MS
                     _latencyFlow.value = latency
                     val history = _latencyHistoryFlow.value.toMutableList()
                     history.add(latency)
@@ -379,6 +431,15 @@ class AudioService : Service() {
                     _latencyHistoryFlow.value = history
                 }
                 delay(100)
+            }
+        }
+
+        // Client-side link report. The server has no way to observe latency, loss
+        // or underruns on this side of the link.
+        serviceScope.launch(Dispatchers.IO) {
+            while (isRunning) {
+                if (resendTarget != null) sendStatsToServer()
+                delay(STATS_INTERVAL_MS)
             }
         }
 
@@ -407,6 +468,7 @@ class AudioService : Service() {
                         if (len >= 10 && String(data, 0, 10) == "AS2P_OFFER") {
                             if (serverAddress == null) {
                                 serverAddress = packet.address
+                                resendTarget = packet.address
                                 Log.i("AS2P_Diag", "[Conn] Server Address set to: ${packet.address}")
                                 _isSearchingFlow.value = false
                                 mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f).build())
@@ -421,33 +483,59 @@ class AudioService : Service() {
                                 lastAudioTime = System.currentTimeMillis()
                                 configRetryCount = 0
                             }
-                        } else if (len > 12 && String(data, 0, 10) == "AS2P_AUDIO") {
+                        } else if (len > 10 && String(data, 0, 10) == "AS2P_AUDIO") {
                             _isSearchingFlow.value = false 
                             lastAudioTime = System.currentTimeMillis()
                             configRetryCount = 0
+
+                            // Audio arriving proves the server is streaming, so adopt
+                            // its address even if the OFFER broadcast was lost. Without
+                            // this, a missed OFFER would leave resendTarget null and
+                            // silently disable retransmission for the whole session.
+                            if (serverAddress == null) {
+                                serverAddress = packet.address
+                                resendTarget = packet.address
+                                _isSearchingFlow.value = false
+                                mediaSession?.setPlaybackState(
+                                    PlaybackStateCompat.Builder()
+                                        .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
+                                        .build()
+                                )
+                                Log.i("AS2P_Diag", "[Conn] Server inferred from audio: ${packet.address}")
+                            }
                             
-                            if (len > 26) { // Prefix(10) + Seq(8) + TS(8)
-                                // Redundancy Check
-                                val seq = ByteBuffer.wrap(data, 10, 8).order(ByteOrder.LITTLE_ENDIAN).long
-                                
+                            if (len > AUDIO_HEADER_LEN) {
+                                // v9 header after the 10-byte prefix:
+                                // tick(8) + send_ts_ms(8) + flags(8) + seq(4)
+                                val hdr = ByteBuffer.wrap(data, 10, PACKET_HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN)
+                                val tick = hdr.long
+                                hdr.long   // send_ts_ms: informational, not needed for playback
+                                val flags = hdr.long
+                                val seq = hdr.int.toLong() and 0xFFFFFFFFL
+
+                                val isRetransmit = (flags and FLAG_RETRANSMIT) != 0L
+
                                 if (lastReceivedSeq != -1L && seq > lastReceivedSeq + 1) {
                                     Log.w("AS2P_Diag", "[Network] Gap: ${lastReceivedSeq + 1} to ${seq - 1}")
                                 }
                                 lastReceivedSeq = seq
 
-                                if (connectionManager.isDuplicate(seq)) {
+                                // Retransmissions legitimately repeat a tick, so they must not
+                                // be treated as duplicates of the original.
+                                if (!isRetransmit && connectionManager.isDuplicate(seq)) {
                                     duplicateCount++
-                                    continue // Skip duplicate packets early
+                                    continue
                                 }
 
                                 val now = System.currentTimeMillis()
                                 if (now - lastLogTime > 2000) {
                                     val plcCount = NativeBridge.getPLCCount()
-                                    if (duplicateCount > 0 || plcCount > 0) {
-                                        // Log to Logcat only, do not update notification
-                                        Log.i("AS2P_Service", "[Stats] Redundancy: $duplicateCount, PLC: $plcCount (in 2s)")
-                                        
-                                        // Refresh notification to show "Streaming" state cleanly
+                                    val underflows = NativeBridge.getUnderflowCount()
+                                    val discarded = NativeBridge.getDiscardedFrames()
+                                    if (duplicateCount > 0 || plcCount > 0 || underflows > 0 || discarded > 0) {
+                                        // Counters are cumulative since the last reset, not
+                                        // per-interval.
+                                        Log.i("AS2P_Service", "[Stats] Dupes: $duplicateCount (2s), PLC: $plcCount, Underflows: $underflows, Discarded: $discarded (session)")
                                         val modeName = _latencyModeFlow.value.name.replace("_", " ")
                                         updateNotificationState("$modeName - Streaming")
                                     }
@@ -455,15 +543,20 @@ class AudioService : Service() {
                                     lastLogTime = now
                                 }
 
+                                // The native layer parses the header itself (it needs
+                                // the tick to key its jitter buffer), so hand it
+                                // everything after the "AS2P_AUDIO" prefix.
                                 val payloadSize = len - 10
-                                val payload = ByteArray(payloadSize)
-                                System.arraycopy(data, 10, payload, 0, payloadSize)
-                                NativeBridge.writeToNativeBuffer(payload, payloadSize)
+                                if (payloadSize > PACKET_HEADER_LEN) {
+                                    val payload = ByteArray(payloadSize)
+                                    System.arraycopy(data, 10, payload, 0, payloadSize)
+                                    NativeBridge.writeToNativeBuffer(payload, payloadSize)
+                                }
                             }
                         } else if (len >= 12 && String(data, 0, 12) == "AS2P_GOODBYE") {
                             log("Server Stopped. Resetting...")
                             mediaSession?.setPlaybackState(PlaybackStateCompat.Builder().setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f).build())
-                            serverAddress = null
+                            clearServerConnection()
                             _isSearchingFlow.value = true
                             NativeBridge.resetAudio()
                             connectionManager.reset()
@@ -471,7 +564,7 @@ class AudioService : Service() {
                     } catch (e: java.net.SocketTimeoutException) {
                         if (serverAddress != null) {
                             log("Connection Timeout. Searching...")
-                            serverAddress = null
+                            clearServerConnection()
                             _isSearchingFlow.value = true
                         }
                     } catch (e: Exception) {
@@ -656,6 +749,135 @@ class AudioService : Service() {
         }
     }
 
+    /**
+     * Drops the server association.
+     *
+     * `resendTarget` must be cleared alongside `serverAddress`: the native
+     * decode thread keeps requesting resends as long as it has a target, and a
+     * stale one would spray requests at a server that is no longer streaming.
+     */
+    private fun clearServerConnection() {
+        serverAddress = null
+        resendTarget = null
+    }
+
+    /**
+     * Asks the server to resend the packet carrying [tick].
+     *
+     * Called from the native decode thread the moment a gap is detected, so this
+     * must not block. It reuses a dedicated socket instead of the receiver,
+     * because the receiver is parked in a blocking `receive()`.
+     *
+     * A small in-flight budget keeps a long burst of gaps from flooding the
+     * server; the native side already caps each gap at 8 requests.
+     */
+    private fun requestResend(tick: Long) {
+        val target = resendTarget ?: return
+        val socket = resendSocket ?: return
+        if (pendingResendTicks.get() >= MAX_INFLIGHT_RESENDS) return
+        pendingResendTicks.incrementAndGet()
+        try {
+            val packet = ByteBuffer.allocate(RESEND_PREFIX.length + 8)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(RESEND_PREFIX.toByteArray())
+                .putLong(tick)
+                .array()
+            socket.send(DatagramPacket(packet, packet.size, target, 12345))
+            Log.i("AS2P_Diag", "[Net] Resend requested for tick $tick")
+        } catch (e: Exception) {
+            // Losing a resend request only costs one concealed frame.
+            Log.w("AS2P_Diag", "[Net] Resend request failed: ${e.message}")
+        } finally {
+            pendingResendTicks.decrementAndGet()
+        }
+    }
+
+    /**
+     * Reports the client's own view of the link to the server.
+     *
+     * None of this is derivable from the server's send path: latency, loss and
+     * underruns all happen on the receiving side. Without it there is no way to
+     * tell whether the adaptive buffer is helping or just adding delay.
+     */
+    private fun sendStatsToServer() {
+        val target = resendTarget ?: return
+        val socket = resendSocket ?: return
+        try {
+            val depthFrames = NativeBridge.getBufferDepth()
+            val maxFrames = NativeBridge.getMaxBufferedFrames()
+            val lateX100 = NativeBridge.getLatePercentX100()
+            val underflows = NativeBridge.getUnderflowCount()
+
+            val packet = ByteBuffer.allocate(STATS_PREFIX.length + 5 * 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(STATS_PREFIX.toByteArray())
+                .putInt(maxFrames * 20)          // max latency ms
+                .putInt(depthFrames * 20)        // current latency ms (used as average)
+                .putInt(lateX100)                // late packet percent x100
+                .putInt(0)                       // packet loss percent x100 (server side counts drops)
+                .putInt(underflows)
+                .array()
+            socket.send(DatagramPacket(packet, packet.size, target, 12345))
+        } catch (e: Exception) {
+            // Stats are best-effort.
+        }
+    }
+
+    private fun acquirePowerLocks() {
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AS2P::StreamWakeLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        if (multicastLock == null) {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            // Discovery relies on broadcast/multicast reception, which the Wi-Fi
+            // stack filters out once the device dozes unless this lock is held.
+            multicastLock = wm.createMulticastLock("AS2P::MulticastLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releasePowerLocks() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener { change ->
+                if (change <= AudioManager.AUDIOFOCUS_LOSS) {
+                    Log.i("AS2P_Service", "Audio focus lost ($change); stopping stream")
+                    log("Audio focus lost. Stopping...")
+                    stopSelf()
+                }
+            }
+            .build()
+        audioFocusRequest = request
+        return am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        audioFocusRequest?.let {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.abandonAudioFocusRequest(it)
+        }
+        audioFocusRequest = null
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "AS2P", NotificationManager.IMPORTANCE_LOW)
@@ -688,8 +910,14 @@ class AudioService : Service() {
         // the next instance tries to bind it (EADDRINUSE).
         serviceScope.cancel()
         sendGoodbyeToServer() // 主動告訴 Server 我要斷開了
+        NativeBridge.setResendCallback(null)
         NativeBridge.stopNative()
         udpSocket?.close()
+        resendSocket?.close()
+        resendSocket = null
+        resendTarget = null
+        releasePowerLocks()
+        abandonAudioFocus()
         _serviceState.value = false
         _isSearchingFlow.value = false
         _latencyFlow.value = 0.0f

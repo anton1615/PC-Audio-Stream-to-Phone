@@ -52,6 +52,14 @@ There are several audio streaming solutions available on the market (e.g., Audio
     *   **Server Loop Decoupling**: Completely separates audio capture/encoding from network handling. Prevents Discord or high network traffic from jittering the 5ms audio heart-beat.
     *   **Process Priority Elevation**: Automatically elevates `server.exe` to `HIGH_PRIORITY_CLASS` on Windows to ensure CPU scheduling dominance during heavy system load.
     *   **Fixed Android UI Steps**: Corrected slider logic for `PCM Pre-decode Target` to ensure smooth integer-only selection.
+*   **Adaptive Streaming Core (v1.3.0)**:
+    *   **v9 Packet Header**: Splits the media timeline (monotonic 20ms tick) from the send clock, so lateness is judged on the media timeline rather than arrival time.
+    *   **On-Demand Retransmission**: A lost packet is requested back and resent with a `FLAG_RETRANSMIT` marker, replacing blind duplicate transmission. Costs bandwidth only when something is actually lost.
+    *   **Adaptive Jitter Buffer**: A five-state watermark controller (`Normal` / `PreHolding` / `Holding` / `PreEmptying` / `Emptying`) that raises latency only after an underrun is confirmed, and drains it back once the link is stable.
+    *   **Self-Limiting Buffer Ceiling**: The watermark ceiling grows relative to measured occupancy, so it adapts to a bad link without ratcheting upward forever.
+    *   **MMCSS Audio Thread**: The Windows capture thread registers as a "Pro Audio" task, which reserves scheduling slots that `HIGH_PRIORITY_CLASS` alone does not.
+    *   **Link Statistics**: The client reports latency, late-packet percentage and underrun counts to the server; `--debug` prints them alongside resend counters.
+    *   **Android Power Locks**: Holds a `PARTIAL_WAKE_LOCK` and a `MulticastLock`, and takes audio focus, so streaming and discovery survive the screen turning off.
 *   **High Performance Architecture**:
     *   **Decoupled Worker Thread**: Moves audio decoding out of the playback callback to eliminate glitches caused by CPU throttling.
     *   **Fine-grained Locking**: Optimized mutex usage to prevent playback thread blocking during long decode operations.

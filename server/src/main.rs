@@ -34,7 +34,7 @@ mod ui;
 
 use crate::audio::{AudioCapturer, CaptureEvent};
 use crate::encoder::{create_encoder, encode_frame, configure_encoder, validate_config};
-use crate::network::UdpSender;
+use crate::network::{parse_resend_request, ResendCache, UdpSender};
 use crate::ui::{UiMessage, UiCommand, UiState, AppWindow};
 
 #[derive(Parser, Debug)]
@@ -57,6 +57,46 @@ enum ServerState {
 enum WorkerCommand {
     Reconfigure(i32, i32),
     SetRedundancy(bool),
+    /// Receiver asked for the packet carrying this media tick.
+    Resend(u64),
+}
+
+/// Send-side counters plus the client's own measurements.
+///
+/// The client reports its view (latency, loss, underruns) in `AS2P_STATS`
+/// packets; the server cannot infer any of that from its own send path, and
+/// without it there is no way to tell whether the adaptive buffer is actually
+/// helping or just adding latency.
+#[derive(Default)]
+struct StreamStats {
+    packets_sent: std::sync::atomic::AtomicU64,
+    bytes_sent: std::sync::atomic::AtomicU64,
+    resend_requests: std::sync::atomic::AtomicU64,
+    resends_served: std::sync::atomic::AtomicU64,
+    resend_misses: std::sync::atomic::AtomicU64,
+    client_max_latency_ms: std::sync::atomic::AtomicU32,
+    client_avg_latency_ms: std::sync::atomic::AtomicU32,
+    client_late_percent_x100: std::sync::atomic::AtomicU32,
+    client_loss_percent_x100: std::sync::atomic::AtomicU32,
+    client_underflows: std::sync::atomic::AtomicU32,
+}
+
+/// `AS2P_STATS` + 5 x u32 (little-endian):
+/// max latency ms, average latency ms, late-packet percent x100,
+/// packet-loss percent x100, underflow count.
+const STATS_PREFIX: &[u8] = b"AS2P_STATS";
+const STATS_LEN: usize = 10 + 5 * 4;
+
+fn parse_client_stats(buf: &[u8]) -> Option<[u32; 5]> {
+    if buf.len() < STATS_LEN || &buf[0..10] != STATS_PREFIX {
+        return None;
+    }
+    let mut out = [0u32; 5];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let start = 10 + i * 4;
+        *slot = u32::from_le_bytes(buf[start..start + 4].try_into().ok()?);
+    }
+    Some(out)
 }
 
 fn load_embedded_icon() -> Icon {
@@ -216,10 +256,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             
                             let sequence_atomic = Arc::new(std::sync::atomic::AtomicU64::new(0));
                             let current_bitrate_atomic = Arc::new(std::sync::atomic::AtomicI32::new(current_bitrate));
+                            let stats = Arc::new(StreamStats::default());
                             
                             let socket_worker = socket.clone();
                             let sequence_worker = sequence_atomic.clone();
                             let bitrate_worker = current_bitrate_atomic.clone();
+                            let stats_worker = stats.clone();
                             let debug_mode_worker = debug_mode;
                             
                             // 0. Audio Worker Task (Decoupled Loop)
@@ -229,18 +271,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let mut encoder = create_encoder().expect("Err");
                                 let _ = configure_encoder(&mut encoder, current_bitrate, current_complexity);
                                 let mut pcm_buffer = Vec::with_capacity(1920 * 10);
+                                let mut resend_cache = ResendCache::new();
                                 let start_time = std::time::Instant::now();
+                                
+                                // Media tick counts 20 ms Opus frames. It advances only when a
+                                // frame is actually transmitted, so it stays a faithful media
+                                // timeline even if the capture loop stalls.
+                                let mut media_tick: u64 = 0;
                                 
                                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(5));
                                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                                // Warm-up
+                                // Warm-up: pre-roll the client's jitter buffer so it can start
+                                // playing without waiting for the first real frames.
                                 if debug_mode_worker { println!("{} Sending initial 10 warm-up packets to {}", "[AUDIO]".green(), target); }
                                 let silence_pcm = vec![0.0f32; 1920];
                                 let silence_data = encode_frame(&mut encoder, &silence_pcm);
                                 for _ in 0..10 {
                                     let ts = start_time.elapsed().as_millis() as u64;
-                                    let _ = udp_sender.send_audio_v8(sequence_worker.load(Ordering::SeqCst), ts, silence_data.clone()).await;
+                                    let seq = sequence_worker.load(Ordering::SeqCst) as u32;
+                                    let _ = udp_sender.send_audio(seq, media_tick, ts, silence_data.clone()).await;
+                                    resend_cache.store(media_tick, ts, &silence_data);
+                                    stats_worker.packets_sent.fetch_add(1, Ordering::Relaxed);
+                                    stats_worker.bytes_sent.fetch_add(silence_data.len() as u64, Ordering::Relaxed);
+                                    media_tick += 1;
                                     sequence_worker.fetch_add(1, Ordering::SeqCst);
                                 }
 
@@ -259,8 +313,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             let data = encode_frame(&mut encoder, &frame);
                                                             if !data.is_empty() {
                                                                 let ts = start_time.elapsed().as_millis() as u64;
-                                                                let seq = sequence_worker.load(Ordering::SeqCst);
-                                                                let _ = udp_sender.send_audio_v8(seq, ts, data).await;
+                                                                let seq = sequence_worker.load(Ordering::SeqCst) as u32;
+                                                                let _ = udp_sender.send_audio(seq, media_tick, ts, data.clone()).await;
+                                                                resend_cache.store(media_tick, ts, &data);
+                                                                stats_worker.packets_sent.fetch_add(1, Ordering::Relaxed);
+                                                                stats_worker.bytes_sent.fetch_add(data.len() as u64, Ordering::Relaxed);
+                                                                media_tick += 1;
                                                                 sequence_worker.fetch_add(1, Ordering::SeqCst);
                                                             }
                                                         }
@@ -287,18 +345,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let _ = configure_encoder(&mut encoder, br, comp);
                                                     let _ = capturer.reinitialize();
                                                     pcm_buffer.clear();
+                                                    // Cached frames were encoded with the old
+                                                    // configuration; serving them after a
+                                                    // reconfigure would mix bitrates.
+                                                    resend_cache.clear();
                                                     
                                                     let silence_pcm = vec![0.0f32; 1920];
                                                     let silence_data = encode_frame(&mut encoder, &silence_pcm);
                                                     for _ in 0..10 {
                                                         let ts = start_time.elapsed().as_millis() as u64;
-                                                        let seq = sequence_worker.load(Ordering::SeqCst);
-                                                        let _ = udp_sender.send_audio_v8(seq, ts, silence_data.clone()).await;
+                                                        let seq = sequence_worker.load(Ordering::SeqCst) as u32;
+                                                        let _ = udp_sender.send_audio(seq, media_tick, ts, silence_data.clone()).await;
+                                                        resend_cache.store(media_tick, ts, &silence_data);
+                                                        stats_worker.packets_sent.fetch_add(1, Ordering::Relaxed);
+                                                        stats_worker.bytes_sent.fetch_add(silence_data.len() as u64, Ordering::Relaxed);
+                                                        media_tick += 1;
                                                         sequence_worker.fetch_add(1, Ordering::SeqCst);
                                                     }
                                                 }
                                                 Some(WorkerCommand::SetRedundancy(r)) => {
                                                     udp_sender.redundancy_enabled = r;
+                                                }
+                                                Some(WorkerCommand::Resend(tick)) => {
+                                                    stats_worker.resend_requests.fetch_add(1, Ordering::Relaxed);
+                                                    // Clone out of the cache so the borrow ends before the await.
+                                                    let cached = resend_cache.get(tick).map(|c| crate::network::CachedPacket {
+                                                        tick: c.tick,
+                                                        send_ts_ms: c.send_ts_ms,
+                                                        payload: c.payload.clone(),
+                                                    });
+                                                    match cached {
+                                                        Some(entry) => {
+                                                            let seq = sequence_worker.load(Ordering::SeqCst) as u32;
+                                                            let _ = udp_sender.send_retransmission(seq, &entry).await;
+                                                            stats_worker.resends_served.fetch_add(1, Ordering::Relaxed);
+                                                        }
+                                                        None => {
+                                                            stats_worker.resend_misses.fetch_add(1, Ordering::Relaxed);
+                                                            if debug_mode_worker {
+                                                                println!("{} Resend miss for tick {}", "[NET]".yellow(), tick);
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 None => break,
                                             }
@@ -331,6 +419,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             last_activity_time = std::time::Instant::now();
                                             if len >= 10 && &buf[0..10] == b"AS2P_ALIVE" {
                                                 continue;
+                                            } else if let Some(tick) = parse_resend_request(&buf[..len]) {
+                                                // Receiver noticed a gap and asked for this tick back.
+                                                // Non-blocking: a full command channel only means the
+                                                // audio worker is behind, and the packet is already
+                                                // too late to be useful by the time it catches up.
+                                                let _ = worker_cmd_tx.try_send(WorkerCommand::Resend(tick));
+                                            } else if let Some(client) = parse_client_stats(&buf[..len]) {
+                                                stats.client_max_latency_ms.store(client[0], Ordering::Relaxed);
+                                                stats.client_avg_latency_ms.store(client[1], Ordering::Relaxed);
+                                                stats.client_late_percent_x100.store(client[2], Ordering::Relaxed);
+                                                stats.client_loss_percent_x100.store(client[3], Ordering::Relaxed);
+                                                stats.client_underflows.store(client[4], Ordering::Relaxed);
                                             } else if len >= 16 && &buf[0..11] == b"AS2P_CONFIG" {
                                                 let raw_bitrate = i32::from_le_bytes(buf[11..15].try_into().unwrap());
                                                 let raw_complexity = buf[15] as i32;
@@ -369,7 +469,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
 
                                         if debug_mode && last_throughput_log.elapsed().as_secs() >= 5 {
-                                            println!("{} Streaming: Seq={}, Target={}", "[DIAG]".bright_black(), sequence_atomic.load(Ordering::SeqCst), target);
+                                            let underflows = stats.client_underflows.load(Ordering::Relaxed);
+                                            let late = stats.client_late_percent_x100.load(Ordering::Relaxed) as f32 / 100.0;
+                                            let loss = stats.client_loss_percent_x100.load(Ordering::Relaxed) as f32 / 100.0;
+                                            println!(
+                                                "{} Streaming: Seq={}, Sent={}, Bytes={}, Resend(req/served/miss)={}/{}/{}, Client[late={:.2}%, loss={:.2}%, underruns={}]",
+                                                "[DIAG]".bright_black(),
+                                                sequence_atomic.load(Ordering::SeqCst),
+                                                stats.packets_sent.load(Ordering::Relaxed),
+                                                stats.bytes_sent.load(Ordering::Relaxed),
+                                                stats.resend_requests.load(Ordering::Relaxed),
+                                                stats.resends_served.load(Ordering::Relaxed),
+                                                stats.resend_misses.load(Ordering::Relaxed),
+                                                late,
+                                                loss,
+                                                underflows,
+                                            );
                                             last_throughput_log = std::time::Instant::now();
                                         }
                                     }

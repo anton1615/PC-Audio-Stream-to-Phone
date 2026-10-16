@@ -12,6 +12,96 @@ pub enum CaptureEvent {
     Error(String),
 }
 
+/// MMCSS (Multimedia Class Scheduler Service) registration for the audio thread.
+///
+/// SetPriorityClass(HIGH_PRIORITY_CLASS) only raises the *process* base priority;
+/// it does not give the audio thread the guaranteed scheduling slots MMCSS
+/// reserves for registered "Pro Audio" threads. Without this, glitch-free
+/// capture depends on nothing else on the box competing for the CPU.
+///
+/// `AvSetMmThreadCharacteristicsW` must be called from the thread it applies to,
+/// so this is invoked at the top of the CPAL callback's owning thread. The
+/// returned handle has to stay alive for the registration to persist and must be
+/// reverted from the same thread, hence the RAII guard.
+#[cfg(windows)]
+pub struct MmcssGuard {
+    handle: windows::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl MmcssGuard {
+    /// Registers the calling thread with MMCSS under the "Pro Audio" task.
+    /// Returns `None` when the registration fails (e.g. ERROR_PRIVILEGE_NOT_HELD
+    /// 1314), in which case the caller keeps running at its normal priority.
+    pub fn register() -> Option<Self> {
+        use windows::core::w;
+        use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+
+        let mut task_index: u32 = 0;
+        // SAFETY: `w!("Pro Audio")` is a valid NUL-terminated wide string and
+        // `task_index` is a valid out-parameter for the duration of the call.
+        // The returned HANDLE is owned by this guard and reverted in `drop`.
+        let handle = unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task_index) }.ok()?;
+        Some(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MmcssGuard {
+    fn drop(&mut self) {
+        use windows::Win32::System::Threading::AvRevertMmThreadCharacteristics;
+        // SAFETY: `self.handle` came from a successful AvSetMmThreadCharacteristicsW
+        // call on this same thread and is reverted exactly once.
+        unsafe {
+            let _ = AvRevertMmThreadCharacteristics(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub struct MmcssGuard;
+
+#[cfg(not(windows))]
+impl MmcssGuard {
+    pub fn register() -> Option<Self> {
+        None
+    }
+}
+
+/// Registers the *current* thread with MMCSS exactly once.
+///
+/// CPAL invokes the capture callback on a dedicated audio thread, but the
+/// callback itself is the only code that runs there, so the registration has to
+/// happen on the first invocation. `THREAD_LOCAL` holds the guard for the
+/// lifetime of that thread, which is what keeps the MMCSS registration alive —
+/// reverting it immediately would defeat the purpose.
+///
+/// `AvSetMmThreadCharacteristicsW` only needs to be called once per thread; the
+/// `Cell<bool>` short-circuits the repeated calls that would otherwise happen on
+/// every audio buffer (~every 10 ms).
+fn register_audio_thread_once(debug_enabled: bool) {
+    thread_local! {
+        static MMCSS: std::cell::RefCell<Option<MmcssGuard>> = const { std::cell::RefCell::new(None) };
+        static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    REGISTERED.with(|registered| {
+        if registered.get() {
+            return;
+        }
+        registered.set(true);
+
+        let guard = MmcssGuard::register();
+        if debug_enabled {
+            match guard {
+                Some(_) => println!("{} Audio thread registered with MMCSS (Pro Audio)", "[SYS]".green()),
+                None => println!("{} MMCSS registration failed; audio thread runs at normal priority", "[SYS]".yellow()),
+            }
+        }
+        MMCSS.with(|slot| *slot.borrow_mut() = guard);
+    });
+}
+
 pub struct Fader {
     current_volume: f32,
     target_volume: f32,
@@ -166,13 +256,15 @@ impl AudioCapturer {
         };
 
         let sample_format = config.sample_format();
+        let debug_enabled = self.debug_enabled;
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        register_audio_thread_once(debug_enabled);
                         let pcm = data.to_vec();
-                        if let Some(ref mut _rs) = resampler {
+                        if let Some(_rs) = &mut resampler {
                             // TODO: Implement actual resampling logic if needed
                             let _ = tx.send(pcm);
                         } else {
@@ -187,7 +279,10 @@ impl AudioCapturer {
             _ => {
                  device.build_input_stream(
                     &stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| { let _ = tx.send(data.to_vec()); },
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        register_audio_thread_once(debug_enabled);
+                        let _ = tx.send(data.to_vec());
+                    },
                     move |_| { failed.store(true, Ordering::SeqCst); },
                     None,
                 )
