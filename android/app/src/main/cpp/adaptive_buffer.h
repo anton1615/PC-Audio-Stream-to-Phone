@@ -39,9 +39,9 @@ constexpr int MS_PER_FRAME = 20;
 
 class AdaptiveBuffer {
 public:
-    // Frames to add when the link proves unstable, and to remove once it is clean.
+    // Frames to add when the link proves unstable. Removal is one step: a
+    // confirmed clean window drops the watermark straight back to the base.
     static constexpr int RAISE_STEP_FRAMES = 2;   // +40 ms
-    static constexpr int LOWER_STEP_FRAMES = 1;   // -20 ms
 
     // How long an underrun-free stretch must last before changing state.
     static constexpr int HOLD_CONFIRM_MS = 500;
@@ -193,16 +193,16 @@ public:
 
             case QueueState::PreEmptying:
                 if (elapsedMs >= DRAIN_CONFIRM_MS && mUnderrunsInState == 0) {
+                    // The link has been clean for the whole confirm window, so
+                    // pay the base latency again in one step. Draining a frame
+                    // at a time kept sessions pinned at the raised watermark
+                    // for half a minute after every transient underrun burst.
                     if (mTargetFrames > mBaseFrames) {
-                        mTargetFrames = clamp(mTargetFrames - LOWER_STEP_FRAMES, mBaseFrames, mCeilingFrames);
-                        log("[Jitter] watermark lowered to %d frames (%d ms)",
-                            mTargetFrames, mTargetFrames * MS_PER_FRAME, 0);
-                        // Reset the clock so each step down is itself confirmed.
-                        mStateEnteredAt = nowTs;
-                    } else {
-                        log("[Jitter] -> Normal, watermark back at base %d frames", mTargetFrames, 0, 0);
-                        transition(QueueState::Normal);
+                        log("[Jitter] -> Normal, watermark %d -> %d frames (stable %d ms)",
+                            mTargetFrames, mBaseFrames, static_cast<int>(elapsedMs));
+                        mTargetFrames = mBaseFrames;
                     }
+                    transition(QueueState::Normal);
                 }
                 break;
 

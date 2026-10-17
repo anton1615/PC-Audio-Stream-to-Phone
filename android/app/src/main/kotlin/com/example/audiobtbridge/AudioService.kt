@@ -532,10 +532,11 @@ class AudioService : Service() {
                                     val plcCount = NativeBridge.getPLCCount()
                                     val underflows = NativeBridge.getUnderflowCount()
                                     val discarded = NativeBridge.getDiscardedFrames()
-                                    if (duplicateCount > 0 || plcCount > 0 || underflows > 0 || discarded > 0) {
+                                    val decodeLag = NativeBridge.getDecodeLagCount()
+                                    if (duplicateCount > 0 || plcCount > 0 || underflows > 0 || decodeLag > 0 || discarded > 0) {
                                         // Counters are cumulative since the last reset, not
                                         // per-interval.
-                                        Log.i("AS2P_Service", "[Stats] Dupes: $duplicateCount (2s), PLC: $plcCount, Underflows: $underflows, Discarded: $discarded (session)")
+                                        Log.i("AS2P_Service", "[Stats] Dupes: $duplicateCount (2s), PLC: $plcCount, Underflows: $underflows, DecodeLag: $decodeLag, Discarded: $discarded (session)")
                                         val modeName = _latencyModeFlow.value.name.replace("_", " ")
                                         updateNotificationState("$modeName - Streaming")
                                     }

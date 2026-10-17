@@ -25,6 +25,7 @@ object NativeBridge {
     external fun getBufferDepth(): Int
     external fun getPLCCount(): Int
     external fun getUnderflowCount(): Int
+    external fun getDecodeLagCount(): Int
     external fun getDiscardedFrames(): Int
     external fun getMaxBufferedFrames(): Int
     external fun getTargetFrames(): Int

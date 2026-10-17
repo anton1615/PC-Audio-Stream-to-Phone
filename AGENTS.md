@@ -93,6 +93,13 @@ format or the receive path.
   `getUnderflowCount` and `getDiscardedFrames` are read by both the periodic log
   line and the stats report. A destructive read (`exchange(0)`) lets whichever
   loop runs first steal the other's samples.
+- **Only real starvation may raise the watermark.** The audio callback plays
+  from `mPcmBuffer` only; the decode thread refills it from the jitter buffer.
+  PCM dry with the jitter buffer still holding frames is decode lag (a
+  scheduler hiccup), not link instability — it is counted separately
+  (`mDecodeLagCount`) and must not call `AdaptiveBuffer::onUnderrun()` or latch
+  `mIsBuffering`. Treating it as an underrun ratcheted sessions to the 500 ms
+  ceiling within a minute.
 - **`AdaptiveBuffer` is mutated from the audio callback.** Read its fields under
   `mBufferMutex`, never directly.
 - **The resend callback is copied under the lock and invoked outside it.** It
@@ -111,7 +118,7 @@ The watermark is not a fixed value. It moves in both directions:
 | `Normal` | start / drained back | underrun → `PreHolding` |
 | `PreHolding` | underrun seen | 500 ms clean → `Normal`; another underrun → `Holding` |
 | `Holding` | instability confirmed | buffered and stable 3000 ms → `PreEmptying` |
-| `PreEmptying` | link recovered | 2000 ms clean → lower one step, or `Normal` at base |
+| `PreEmptying` | link recovered | 2000 ms clean → drop straight to base (`Normal`) |
 | `Emptying` | backlog actually discarded | occupancy back at watermark → `PreEmptying` |
 
 The ceiling starts above the base and grows **relative to measured occupancy**,

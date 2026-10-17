@@ -82,6 +82,7 @@ public:
         mExpectedSeq = 0;
         mPlcCount = 0;
         mUnderflowCount = 0;
+        mDecodeLagCount = 0;
         mDiscardedFrames = 0;
         mMaxBufferedFrames = 0;
         mLatePackets = 0;
@@ -151,8 +152,17 @@ public:
             size_t toCopy = std::min((size_t)totalSamplesNeeded, mPcmBuffer.size());
             memcpy(output, mPcmBuffer.data(), toCopy * sizeof(float));
             mPcmBuffer.erase(mPcmBuffer.begin(), mPcmBuffer.begin() + toCopy);
+        } else if (!mJitterBuffer.empty()) {
+            // The decode bridge lagged: encoded frames are still queued but the
+            // PCM inventory went dry before the decoder woke up. Raising the
+            // watermark cannot fix a late decoder, so this is counted apart and
+            // must not ratchet the watermark or latch the buffering state —
+            // treating a scheduler hiccup as link instability pinned sessions
+            // at the 500 ms ceiling for minutes.
+            mDecodeLagCount++;
         } else {
-            // Ran dry: this is the underrun that drives the adaptive watermark.
+            // Ran dry: a genuine starvation — this is the underrun that drives
+            // the adaptive watermark.
             mUnderflowCount++;
             mIsBuffering = true;
             mAdaptive.onUnderrun();
@@ -322,6 +332,7 @@ public:
     // would let whichever loop ran first steal the other's samples.
     int getPLCCount() { return mPlcCount.load(); }
     int getUnderflowCount() { return mUnderflowCount.load(); }
+    int getDecodeLagCount() { return mDecodeLagCount.load(); }
     int getDiscardedFrames() { return mDiscardedFrames.load(); }
     int getMaxBufferedFrames() { return mMaxBufferedFrames.load(); }
 
@@ -380,6 +391,7 @@ private:
         mExpectedSeq = 0;
         mPlcCount = 0;
         mUnderflowCount = 0;
+        mDecodeLagCount = 0;
         mDiscardedFrames = 0;
         mMaxBufferedFrames = 0;
         mLatePackets = 0;
@@ -405,6 +417,7 @@ private:
     bool mFirstPacket = true;
     std::atomic<int> mPlcCount{0};
     std::atomic<int> mUnderflowCount{0};
+    std::atomic<int> mDecodeLagCount{0};
     std::atomic<int> mDiscardedFrames{0};
     std::atomic<int> mMaxBufferedFrames{0};
     std::atomic<uint64_t> mLatePackets{0};
@@ -450,6 +463,7 @@ JNIEXPORT void JNICALL Java_com_example_audiobtbridge_NativeBridge_updateAdvance
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getBufferDepth(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getBufferDepth(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getPLCCount(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getPLCCount(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getUnderflowCount(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getUnderflowCount(); }
+JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getDecodeLagCount(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getDecodeLagCount(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getDiscardedFrames(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getDiscardedFrames(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getMaxBufferedFrames(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getMaxBufferedFrames(); }
 JNIEXPORT jint JNICALL Java_com_example_audiobtbridge_NativeBridge_getTargetFrames(JNIEnv *env, jobject thiz) { (void)env; (void)thiz; return gAudioEngine.getTargetFrames(); }

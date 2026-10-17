@@ -54,11 +54,8 @@ static void test_confirmed_underruns_raise_then_drain() {
 
     b.advanceTimeForTest(2100);   // past DRAIN_CONFIRM_MS
     b.onTick(20);
-    CHECK(b.targetFrames() == 6, "drains one step at a time");
-
-    b.advanceTimeForTest(2100);
-    b.onTick(20);
-    CHECK(b.targetFrames() == 5, "drains back to base");
+    CHECK(b.targetFrames() == 5, "one confirmed clean window drains straight to base");
+    CHECK(b.state() == QueueState::Normal, "back to Normal after the drain");
 }
 
 // The ceiling must rise when occupancy approaches it, and must stop rising once
