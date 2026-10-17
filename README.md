@@ -128,7 +128,7 @@ When the decode thread sees a gap between expected and received tick, it asks th
 | `Normal` | steady state | an underrun is seen → `PreHolding` |
 | `PreHolding` | underrun seen | 500 ms clean → back to `Normal`; second underrun → `Holding` |
 | `Holding` | instability *confirmed* | buffered + stable 3 s → `PreEmptying` |
-| `PreEmptying` | link recovered | 2 s clean → step the watermark down, or `Normal` at base |
+| `PreEmptying` | link recovered | 2 s clean → drop straight to base (`Normal`) |
 | `Emptying` | backlog dropped | occupancy back at watermark → `PreEmptying` |
 
 The confirm/release windows are what stop a single stray underrun from permanently raising your latency — and the ceiling grows *relative to measured occupancy*, so it can absorb a bad link without ratcheting upward forever. The controller is pure logic in [`adaptive_buffer.h`](android/app/src/main/cpp/adaptive_buffer.h), unit-testable on any host.
