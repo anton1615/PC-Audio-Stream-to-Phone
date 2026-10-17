@@ -5,6 +5,8 @@ Verifies the parts of the protocol that are observable on the wire:
   - v9 audio header layout and media tick monotonicity
   - retransmission (AS2P_RESEND -> packet with FLAG_RETRANSMIT)
   - client stats reporting (AS2P_STATS is accepted without disturbing the stream)
+  - real-time supply rate (the client consumes 50 frames/s; a slow fallback
+    starves its jitter buffer when the PC is silent)
 """
 
 import socket
@@ -131,6 +133,32 @@ def main():
     else:
         failures.append("stream stopped after AS2P_STATS")
 
+    # --- 6. supply rate ---
+    # The client consumes 50 frames/s. When the PC is fully silent the server
+    # must still supply real time from its silence fallback; measuring below
+    # this rate starved the client's jitter buffer and ratcheted the adaptive
+    # watermark to its ceiling (up to 500 ms of latency after audio resumed).
+    # Bound covers both regimes: real WASAPI callbacks and the fallback.
+    rate_packets = []
+    rate_deadline = time.time() + 3
+    while time.time() < rate_deadline:
+        try:
+            data, _ = sock.recvfrom(2048)
+        except socket.timeout:
+            continue
+        if data.startswith(PREFIX) and len(data) >= len(PREFIX) + HEADER_LEN:
+            tick, send_ts, flags, _ = struct.unpack_from("<QQQI", data, len(PREFIX))
+            if not (flags & FLAG_RETRANSMIT):
+                rate_packets.append((tick, send_ts))
+    if len(rate_packets) >= 20:
+        span_s = (rate_packets[-1][1] - rate_packets[0][1]) / 1000.0
+        rate = (rate_packets[-1][0] - rate_packets[0][0]) / span_s
+        if 45.0 <= rate <= 55.0:
+            print(f"PASS: supply rate {rate:.1f} frames/s")
+        else:
+            failures.append(f"supply rate {rate:.1f} frames/s outside 45-55")
+    else:
+        failures.append(f"only {len(rate_packets)} packets for rate check (expected >=20)")
     sock.close()
 
     print()

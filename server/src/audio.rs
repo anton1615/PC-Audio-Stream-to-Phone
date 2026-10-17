@@ -161,6 +161,7 @@ pub struct AudioCapturer {
     stream_failed: Arc<AtomicBool>,
     pub needs_restart: Arc<AtomicBool>,
     last_callback_time: Instant,
+    silence_credit_us: u128,
     fader: Fader,
     debug_enabled: bool,
 }
@@ -176,6 +177,7 @@ impl AudioCapturer {
             stream_failed: Arc::new(AtomicBool::new(false)),
             needs_restart: Arc::new(AtomicBool::new(false)),
             last_callback_time: Instant::now(),
+            silence_credit_us: 0,
             fader: Fader::new(),
             debug_enabled: debug,
         };
@@ -214,6 +216,7 @@ impl AudioCapturer {
         self.stream_failed.store(false, Ordering::SeqCst);
         self.needs_restart.store(false, Ordering::SeqCst);
         self.last_callback_time = Instant::now();
+        self.silence_credit_us = 0;
         self.fader.current_volume = 0.0; // Start at 0 for fade-in
         self.fader.fade_to(1.0, 10.0, 48000.0);
         
@@ -306,17 +309,46 @@ impl AudioCapturer {
         match self.receiver.try_recv() {
             Ok(mut data) => {
                 self.last_callback_time = Instant::now();
+                self.silence_credit_us = 0;
                 self.fader.process(&mut data);
                 CaptureEvent::Data(data)
             }
             _ => {
-                if self.last_callback_time.elapsed().as_millis() >= 25 {
+                // Silence fallback: WASAPI loopback fires only while something
+                // renders, so a fully silent PC delivers no callbacks at all.
+                //
+                // Emit silence at real time — one 20 ms frame per 20 ms of
+                // wall clock. The old flat one-frame-per-25 ms gate measured
+                // ~32 frames/s against the client's 50 frames/s consumption;
+                // the deficit drained the jitter buffer during every silent
+                // period and the underrun storm ratcheted the adaptive
+                // watermark to its ceiling, so audio that resumed afterwards
+                // paid up to 500 ms of added latency.
+                let elapsed = self.last_callback_time.elapsed();
+                if elapsed < Duration::from_millis(40) {
+                    // 40 ms gate stays safely above the ~10-20 ms real
+                    // callback cadence so the fallback cannot interleave
+                    // false silence into live audio.
+                    CaptureEvent::Data(vec![])
+                } else if elapsed > Duration::from_millis(250) {
+                    // Long stall (device reinit): give up the backlog.
                     self.last_callback_time = Instant::now();
+                    self.silence_credit_us = 0;
                     let mut silence = vec![0.0f32; 1920];
                     self.fader.process(&mut silence);
                     CaptureEvent::Data(silence)
                 } else {
-                    CaptureEvent::Data(vec![])
+                    // Convert the elapsed wall time into whole 20 ms frames,
+                    // keeping the sub-frame remainder in a microsecond credit
+                    // so the long-run rate stays locked to real time no
+                    // matter how the poll loop's ticks land.
+                    self.silence_credit_us += elapsed.as_micros();
+                    let n = (self.silence_credit_us / 20_000) as usize;
+                    self.silence_credit_us -= n as u128 * 20_000;
+                    self.last_callback_time = Instant::now();
+                    let mut silence = vec![0.0f32; 1920 * n];
+                    self.fader.process(&mut silence);
+                    CaptureEvent::Data(silence)
                 }
             }
         }
