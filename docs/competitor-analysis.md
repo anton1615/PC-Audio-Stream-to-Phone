@@ -98,7 +98,7 @@ native 新增 `getUnderflowCount` / `getDiscardedFrames` / `getMaxBufferedFrames
 
 ### P6 — Android 電源與層級
 
-`AudioService.kt`:`PARTIAL_WAKE_LOCK` + `WifiManager.MulticastLock`(discovery 廣播在螢幕關閉後仍能收到的前提)+ AudioFocus(被永久搶走時停止串流);`onDestroy` 依序釋放。Manifest 補 `WAKE_LOCK` 權限。
+`AudioService.kt`:`PARTIAL_WAKE_LOCK` + `WifiManager.MulticastLock`(discovery 廣播在螢幕關閉後仍能收到的前提)+ AudioFocus(僅為取得 media 層級與觀察;**刻意不跟進**對方「焦點被搶走即停串流」——手機端是喇叭,使用者邊連 PC 音訊邊用其他 app 是常規使用情境,焦點被搶只會混音,串流必須繼續);`onDestroy` 依序釋放。Manifest 補 `WAKE_LOCK` 權限。
 
 ### 未實作(刻意)
 

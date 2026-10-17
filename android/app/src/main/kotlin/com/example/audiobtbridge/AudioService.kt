@@ -860,11 +860,10 @@ class AudioService : Service() {
                     .build()
             )
             .setOnAudioFocusChangeListener { change ->
-                if (change <= AudioManager.AUDIOFOCUS_LOSS) {
-                    Log.i("AS2P_Service", "Audio focus lost ($change); stopping stream")
-                    log("Audio focus lost. Stopping...")
-                    stopSelf()
-                }
+                // The phone is the speaker: another app briefly or permanently
+                // taking focus (video, game, notification beep) must not kill
+                // the PC stream, so this only observes. Audio mixes instead.
+                Log.i("AS2P_Service", "Audio focus change ($change); stream continues")
             }
             .build()
         audioFocusRequest = request
