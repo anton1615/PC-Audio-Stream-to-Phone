@@ -70,6 +70,14 @@ format or the receive path.
   not to the sender's ephemeral port. This breaks under user-mode NAT (emulator
   SLIRP rewrites the source to `127.0.0.1`), so an emulator cannot exercise the
   full round trip. Use a real device on the same LAN.
+- **The audio supply must run at real time (50 frames/s).** The client consumes
+  one 20 ms frame every 20 ms. When nothing renders on the PC, WASAPI loopback
+  stops delivering callbacks and the silence fallback in `audio.rs` becomes the
+  sole supply: it emits one 20 ms frame per 20 ms of wall clock on a
+  microsecond-credit timeline. A slower fallback starves the client's jitter
+  buffer, the underrun storm ratchets the adaptive watermark to its ceiling,
+  and audio that resumes afterwards pays hundreds of ms of added latency.
+  `tests/protocol_smoke.py` asserts 45-55 frames/s.
 
 ## Native audio engine invariants
 
