@@ -109,6 +109,15 @@ format or the receive path.
   tested on the host. Keep it free of Android and Oboe headers; it takes a log
   sink instead of calling `__android_log_print` directly.
 
+## Android service invariants
+
+- **Audio focus loss never stops the stream.** The phone is the speaker: using
+  other apps while streaming is the normal case, and any of them can take
+  focus (video, game, notification beep). The v9 port adopted the competitor's
+  "stop on focus loss" policy for a day; the transient-loss variants of the
+  callback killed the stream on a single notification sound. Observe the
+  callback, keep the focus request, let audio mix.
+
 ## Adaptive buffer behaviour
 
 The watermark is not a fixed value. It moves in both directions:
