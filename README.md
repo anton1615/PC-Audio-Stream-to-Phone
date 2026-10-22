@@ -17,7 +17,7 @@
   <a href="https://developer.android.com/kotlin"><img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-client-7F52FF"></a>
   <a href="https://www.opus-codec.org/"><img alt="Opus" src="https://img.shields.io/badge/Codec-Opus-F3A621"></a>
   <a href="https://github.com/google/oboe"><img alt="Oboe" src="https://img.shields.io/badge/Oboe-low--latency-34A853"></a>
-  <a href="https://github.com/anton1615/PC-Audio-Stream-to-Phone/releases"><img alt="Release" src="https://img.shields.io/badge/Release-v1.3.3-0078D4"></a>
+  <a href="https://github.com/anton1615/PC-Audio-Stream-to-Phone/releases"><img alt="Release" src="https://img.shields.io/badge/Release-v1.3.4-0078D4"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-3DA639"></a>
 </p>
 
