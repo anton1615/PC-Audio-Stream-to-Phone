@@ -135,6 +135,20 @@ not by incrementing itself — that is what keeps it from ratcheting upward
 forever. A single stray underrun must not permanently raise latency; that is
 what the confirm windows are for.
 
+## Release signing invariants
+
+- **The release signing key is not in this repository.** `android/app/debug.keystore`
+  was public from 2026-01-22 and signed every release up to v1.3.3; it is burned.
+  v1.3.4+ is signed with a key restored in CI from GitHub Actions secrets.
+  Never commit a keystore, a `keystore.properties`, or a base64 blob of one.
+- **A release build without signing material must fail.** `android/app/build.gradle`
+  throws when a release variant is requested without `keystore.properties` or the
+  `AS2P_KEYSTORE_*` environment variables, so an unsigned APK cannot be published.
+- **The CI workflow pins the expected certificate SHA-256.** Changing the key means
+  updating that constant in `.github/workflows/release.yml` in the same commit.
+- **The key must exist in at least two places, one of them offline.** GitHub Actions
+  secrets cannot be read back, so they are not a backup. See `RELEASING.md`.
+
 ## Conventions
 
 - Comments explain *why*, not *what*. Non-obvious thresholds and wire-format

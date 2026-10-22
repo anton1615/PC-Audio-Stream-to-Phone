@@ -41,6 +41,7 @@
 - [📖 How to Use](#-how-to-use)
 - [❓ Troubleshooting](#-faq--troubleshooting)
 - [🏗️ Build from Source](#️-build-from-source)
+- [🔐 Release Signing](#-release-signing)
 - [📄 License](#-license)
 
 ---
@@ -230,6 +231,24 @@ g++ -std=c++17 -I android/app/src/main/cpp \
 ```
 
 The Android build needs `local.properties` pointing at the Android SDK and `NDK 25.1.8937393`; Oboe and Opus are fetched by CMake on first build.
+
+---
+
+## 🔐 Release Signing
+
+The release APK is signed with a **private key that is not in this repository**. It is restored in
+CI from GitHub Actions secrets, and the workflow verifies the certificate of the APK it publishes
+before the release is created.
+
+> [!WARNING]
+> Until v1.3.4 the repository contained `android/app/debug.keystore` — the key that signed every
+> published release since v1.2.0. That key was public and is now **burned**: it was removed from the
+> repository, and v1.3.4 is signed with a new key. Anyone can still sign an APK that impersonates an
+> older release, so **v1.3.4 cannot be installed over v1.3.3** — uninstall the old app first.
+> The only app identity that is safe to keep updating is the one signed by the current key.
+
+Build and release details, backup rules and the recovery procedure for a lost key are documented in
+[RELEASING.md](RELEASING.md).
 
 ---
 

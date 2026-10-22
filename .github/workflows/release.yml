@@ -39,16 +39,50 @@ jobs:
         with:
           gradle-version: 8.10.2
 
+      # The release signing key is not in the repository. It is restored here from
+      # GitHub Actions secrets; see RELEASING.md for how to rotate or recover it.
+      - name: Restore release signing key
+        env:
+          AS2P_KEYSTORE_B64: ${{ secrets.AS2P_KEYSTORE_B64 }}
+          AS2P_KEYSTORE_PASSWORD: ${{ secrets.AS2P_KEYSTORE_PASSWORD }}
+          AS2P_KEY_ALIAS: ${{ secrets.AS2P_KEY_ALIAS }}
+          AS2P_KEY_PASSWORD: ${{ secrets.AS2P_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android
+          echo "$AS2P_KEYSTORE_B64" | base64 -d > app/as2p-release.keystore
+          {
+            echo "storeFile=app/as2p-release.keystore"
+            echo "storePassword=$AS2P_KEYSTORE_PASSWORD"
+            echo "keyAlias=$AS2P_KEY_ALIAS"
+            echo "keyPassword=$AS2P_KEY_PASSWORD"
+          } > keystore.properties
+
       - name: Build Android APK
         run: |
           cd android
-          gradle assembleDebug
-          
+          gradle assembleRelease
+
+      - name: Verify APK signature
+        env:
+          EXPECTED_CERT_SHA256: e1348351ddfb7ae1386ccd822fbbfb90926da7bcea0a5ef758b28e9e2e29d059
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK"
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | grep -oE 'SHA-256 digest: [0-9a-f]+' | awk '{print $3}')
+          if [ "$ACTUAL" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::APK signed with unexpected certificate: $ACTUAL"
+            exit 1
+          fi
+          echo "APK signed with the expected release certificate."
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: as2p-app
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
 
   create-release:
     needs: [build-windows, build-android]
@@ -71,7 +105,7 @@ jobs:
         with:
           files: |
             server.exe
-            app-debug.apk
+            app-release.apk
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false

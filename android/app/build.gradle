@@ -12,22 +12,46 @@ android {
     def date = new Date()
     def autoVersionCode = Integer.parseInt(date.format('yyMMddHH'))
 
-    // 確保 Keystore 存在
-    def keystoreFile = file('debug.keystore')
-    if (!keystoreFile.exists()) {
-        println "Generating debug.keystore..."
-        ant.genkey(alias: 'androiddebugkey', storepass: 'android', keypass: 'android', keystore: keystoreFile, dname: 'CN=Android Debug,O=Android,C=US', validity: 10000, keyalg: 'RSA', keysize: 2048, storetype: 'pkcs12')
+    // Release signing: the private key is NOT in this repository.
+    // See RELEASING.md for how to create it, back it up and restore it.
+    // Local builds : put keystore.properties next to this file (android/keystore.properties),
+    //                e.g. storeFile=as2p-release.keystore  (relative to android/) or an absolute path.
+    // CI builds    : .github/workflows/release.yml writes the same file from GitHub Actions secrets.
+    // Environment  : AS2P_KEYSTORE_FILE / AS2P_KEYSTORE_PASSWORD / AS2P_KEY_ALIAS / AS2P_KEY_PASSWORD.
+    def signingProps = new Properties()
+    def signingPropsFile = rootProject.file('keystore.properties')
+    if (signingPropsFile.exists()) {
+        signingPropsFile.withInputStream { signingProps.load(it) }
     }
+    def pick = { String prop, String env ->
+        signingProps.getProperty(prop) ?: System.getenv(env)
+    }
+    def releaseStoreFile = pick('storeFile', 'AS2P_KEYSTORE_FILE')
+    def releaseStorePassword = pick('storePassword', 'AS2P_KEYSTORE_PASSWORD')
+    def releaseKeyAlias = pick('keyAlias', 'AS2P_KEY_ALIAS')
+    def releaseKeyPassword = pick('keyPassword', 'AS2P_KEY_PASSWORD')
+    def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
     signingConfigs {
-        config {
-            // 注意：為了確保在不同電腦建置的 APK 可以互相覆蓋安裝，
-            // 建議將 debug.keystore 放在 android/app/ 目錄下。
-            // 腳本已設定為若不存在則自動生成。
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
-            storeFile keystoreFile
-            storePassword 'android'
+        release {
+            if (hasReleaseSigning) {
+                def store = new File(releaseStoreFile)
+                storeFile store.isAbsolute() ? store : rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    // A release build without a key would silently produce an unsigned APK, so fail loudly instead.
+    gradle.taskGraph.whenReady { graph ->
+        def wantsRelease = graph.allTasks.any { it.name.toLowerCase().contains('release') }
+        if (wantsRelease && !hasReleaseSigning) {
+            throw new GradleException(
+                    "Release signing is not configured. Provide android/keystore.properties " +
+                    "or the AS2P_KEYSTORE_FILE / AS2P_KEYSTORE_PASSWORD / AS2P_KEY_ALIAS / " +
+                    "AS2P_KEY_PASSWORD environment variables. See RELEASING.md.")
         }
     }
 
@@ -69,7 +93,8 @@ android {
 
     buildTypes {
         debug {
-            signingConfig signingConfigs.config
+            // No explicit signingConfig: AGP uses the per-machine default debug key
+            // (~/.android/debug.keystore). Debug builds are not published.
             packaging {
                 jniLibs {
                     useLegacyPackaging = false
@@ -77,7 +102,7 @@ android {
             }
         }
         release {
-            signingConfig signingConfigs.config
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

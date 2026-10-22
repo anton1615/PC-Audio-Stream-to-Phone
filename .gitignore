@@ -9,6 +9,11 @@ local.properties
 *.apk
 *.aar
 *.jks
+*.keystore
+# Release signing material (see RELEASING.md) — never commit
+keystore.properties
+android/keystore.properties
+android/app/*.keystore
 .idea/
 *.iml
 android/app/.cxx
